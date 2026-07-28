@@ -1,0 +1,6 @@
+pkg/
+*.tgz
+_app.js
+__pycache__/
+*.pyc
+node_modules/
