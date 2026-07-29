@@ -193,7 +193,8 @@
         <span class="time" id="curTime">0:00.0</span>
         <input type="range" id="seek" min="0" max="1000" value="0" style="flex:1">
         <span class="time" id="durTime">0:00.0</span>
-        <button class="ghost iconbtn" id="btnMute">🔊</button>
+        <button class="iconbtn" id="btnHelp" title="Keyboard shortcuts">❓</button>
+        <button class="iconbtn" id="btnMute" title="Mute">🔊</button>
       </div>
     </div>
 
@@ -691,6 +692,15 @@ rulerEl.addEventListener('mousedown',e=>{
   const rect=rulerEl.getBoundingClientRect();const x=e.clientX-rect.left;
   setPlayhead(x/state.pixelsPerSec);
 });
+// Waveform/click seek on canvas: click to jump playhead to that time position
+const cv=document.getElementById('preview');
+cv.addEventListener('click',e=>{
+  const rect=cv.getBoundingClientRect();
+  const x=e.clientX-rect.left;
+  const w=rect.width;
+  const t=w>0?(x/w)*totalDuration():0;
+  setPlayhead(t);
+});
 rulerEl.addEventListener('wheel',e=>{e.preventDefault();const d=e.deltaY>0?0.9:1.1;state.pixelsPerSec=clamp(state.pixelsPerSec*d,40,600);document.getElementById('zoomLbl').textContent=Math.round(state.pixelsPerSec)+' px/s';renderTimeline();},{passive:false});
 // Touch pinch-to-zoom on ruler
 rulerEl.addEventListener('touchstart',e=>{if(e.touches.length===2){e.preventDefault();}},{passive:false});
@@ -1019,7 +1029,45 @@ function drawTextTo(g,c,localT){
 }
 function yoff(c){return (c.y||0);}
 
-/* ---------- PROPERTIES PANEL ---------- */
+/* ---------- SNAP GUIDES ---------- */
+const SNAP_THRESHOLD=5; // px
+function drawSnapGuides(ctx, dragClip, dragTrackIdx){
+  const pxSec=state.pixelsPerSec;
+  const left = dragClip.start * pxSec;
+  const right = (dragClip.start + effDur(dragClip)) * pxSec;
+  // snap to playhead
+  const phX = state.playhead * pxSec;
+  if(Math.abs(left - phX) < SNAP_THRESHOLD){
+    ctx.strokeStyle='rgba(255,100,100,0.7)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.moveTo(phX,0);ctx.lineTo(phX,canvas.height);ctx.stroke();ctx.setLineDash([]);
+    dragClip.start = phX/pxSec;
+  }
+  if(Math.abs(right - phX) < SNAP_THRESHOLD){
+    ctx.strokeStyle='rgba(255,100,100,0.7)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.moveTo(phX,0);ctx.lineTo(phX,canvas.height);ctx.stroke();ctx.setLineDash([]);
+    dragClip.start = (phX - effDur(dragClip)*pxSec)/pxSec;
+  }
+  // snap to other clips on same track
+  const track = state.tracks[dragTrackIdx];
+  if(!track) return;
+  for(const other of track.clips){
+    if(other.id===dragClip.id) continue;
+    const oLeft = other.start * pxSec;
+    const oRight = (other.start + effDur(other)) * pxSec;
+    // snap left edge to right edge of other
+    if(Math.abs(left - oRight) < SNAP_THRESHOLD){
+      ctx.strokeStyle='rgba(100,200,255,0.7)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+      ctx.beginPath();ctx.moveTo(oRight,0);ctx.lineTo(oRight,canvas.height);ctx.stroke();ctx.setLineDash([]);
+      dragClip.start = oRight/pxSec;
+    }
+    // snap left edge to left edge of other
+    if(Math.abs(left - oLeft) < SNAP_THRESHOLD){
+      ctx.strokeStyle='rgba(100,200,255,0.7)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+      ctx.beginPath();ctx.moveTo(oLeft,0);ctx.lineTo(oLeft,canvas.height);ctx.stroke();ctx.setLineDash([]);
+      dragClip.start = oLeft/pxSec;
+    }
+  }
+}
 const propsBody=document.getElementById('propsBody');
 function renderProps(){
   if(!state.sel){propsBody.innerHTML='<div class="empty-hint">Select a clip on the timeline to edit it, or add media from the left.</div>';document.getElementById('propsTitle').textContent='Properties';return;}
@@ -1533,12 +1581,54 @@ function renderExportFrame(c2,W,H,t,expEls,imageCache){
 let toastT;
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>el.classList.remove('show'),2200);}
 
-/* ---------- INIT ---------- */
+/* ---------- KEYBOARD SHORTCUTS PANEL ---------- */
+function showShortcuts(){
+  const shortcuts=[
+    {key:'Space',action:'Play / Pause'},
+    {key:'Delete',action:'Delete selected clip'},
+    {key:'Ctrl+Z',action:'Undo last action'},
+    {key:'Ctrl+Y',action:'Redo undone action'},
+    {key:'← / →',action:'Move playhead 0.1s'},
+    {key:'Shift+← / →',action:'Move playhead 1s'},
+    {key:'Home',action:'Jump to start'},
+    {key:'End',action:'Jump to end'},
+    {key:'Ctrl+S',action:'Save project'},
+    {key:'?',action:'Show this help panel'},
+  ];
+  const rows=shortcuts.map(s=>'<tr><td><kbd>'+s.key+'</kbd></td><td>'+s.action+'</td></tr>').join('');
+  toast('<table style="font-size:12px"><tr><th>Shortcut</th><th>Action</th></tr>'+rows+'</table>',4000);
+}
+document.getElementById('btnHelp').onclick=showShortcuts;
+// also bind ? key
+document.addEventListener('keydown',e=>{
+  if(e.key==='?'&&!e.ctrlKey&&!e.metaKey&&document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='TEXTAREA'){e.preventDefault();showShortcuts();}
+});
 renderBin();renderTimeline();renderProps();
 // draw initial frame
 renderFrame(0);
 // expose pure logic for node harness
 if(typeof module!=='undefined'){module.exports={clamp,effDur,fmt,Filters,Animations,snapVal,allSnapPoints,state};}
+/* ---------- KEYBOARD SHORTCUTS PANEL ---------- */
+function showShortcuts(){
+const shortcuts=[
+  {key:'Space',action:'Play / Pause'},
+  {key:'Delete',action:'Delete selected clip'},
+  {key:'Ctrl+Z',action:'Undo last action'},
+  {key:'Ctrl+Y',action:'Redo undone action'},
+  {key:'← / →',action:'Move playhead 0.1s'},
+  {key:'Shift+← / →',action:'Move playhead 1s'},
+  {key:'Home',action:'Jump to start'},
+  {key:'End',action:'Jump to end'},
+  {key:'Ctrl+S',action:'Save project'},
+  {key:'?',action:'Show this help panel'},
+];
+const rows=shortcuts.map(s=>'<tr><td><kbd>'+s.key+'</kbd></td><td>'+s.action+'</td></tr>').join('');
+toast('<table style="font-size:12px"><tr><th>Shortcut</th><th>Action</th></tr>'+rows+'</table>',4000);
+}
+document.getElementById('btnHelp').onclick=showShortcuts;
+document.addEventListener('keydown',e=>{
+if(e.key==='?'&&!e.ctrlKey&&!e.metaKey&&document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='TEXTAREA'){e.preventDefault();showShortcuts();}
+});
 </script>
 </body>
 </html>
