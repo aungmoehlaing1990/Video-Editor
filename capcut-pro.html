@@ -586,7 +586,9 @@ function renderTimeline(){
       lane.appendChild(buildClipEl(t,c));
     }
     row.appendChild(lab);row.appendChild(lane);tracksEl.appendChild(row);
-  }
+    // draw keyframe diamonds on the lane after building all clips
+    renderKeyframeDiamonds(lane,state.pixelsPerSec,0,dur,t);
+    }
   updatePlayheadUI();
   document.getElementById('tlInfo').textContent='Tracks: '+state.tracks.length+' · Clips: '+state.tracks.reduce((a,t)=>a+t.clips.length,0)+' · '+fmt(dur);
 }
@@ -746,21 +748,31 @@ document.getElementById('btnDel').onclick=()=>{
   const fc=findClip(state.sel.clipId); if(fc) deleteClipAt(fc.clip.id);
 };
 
-// Audio ducking: auto-lowercase music when voiceover/TTS is active
+// Audio ducking: when TTS/voice is active, fade music down with smooth AudioParam ramps
+let globalMusicGain=null; // shared GainNode for music ducking
+function getMusicGainNode(){
+  if(!globalMusicGain && audioCtxMix){
+    globalMusicGain=audioCtxMix.createGain();
+    globalMusicGain.gain.value=1;
+  }
+  return globalMusicGain;
+}
 function applyAudioDucking(t){
-  if(state.muted || !audioCtxMix) return;
+  if(state.muted||!audioCtxMix) return;
   let hasVoice=false;
   for(const tr of state.tracks){
     for(const cl of tr.clips){
-      if(t>=cl.start && t<cl.start+effDur(cl)){hasVoice=true;break;}
+      if(t>=cl.start&&t<cl.start+effDur(cl)){hasVoice=true;break;}
     }
-    if(hasVoice) break;
+    if(hasVoice)break;
   }
-  if(!hasVoice) return;
-  for(const id in mediaEls){
-    const el=mediaEls[id]; const m=mediaById(id);
-    if(!m||m.kind!=='audio') continue;
-    if(el.volume>0.25) el.volume=Math.max(0.25,el.volume*(1-0.15));
+  const gainNode=getMusicGainNode();
+  if(!gainNode) return;
+  const now=audioCtxMix.currentTime;
+  if(hasVoice){
+    gainNode.gain.setTargetAtTime(0.25,now,0.15); // smooth ramp down to 25%
+  } else {
+    gainNode.gain.setTargetAtTime(1.0,now,0.1); // smooth ramp back up
   }
 }
 
@@ -774,7 +786,16 @@ function play(){
   // init TTS live mix context
   const AC=window.AudioContext||window.webkitAudioContext;
   if(AC && !audioCtxMix){ try{audioCtxMix=new AC();}catch(e){} }
-  if(audioCtxMix){ audioCtxMix.resume&&audioCtxMix.resume(); ttsLive={}; }
+  if(audioCtxMix){
+    audioCtxMix.resume&&audioCtxMix.resume();
+    // connect music gain node if not already connected
+    const mg=getMusicGainNode();
+    if(mg){
+      mg.gain.value=state.muted?0:1;
+      // only disconnect/reconnect on mute change
+    }
+    ttsLive={};
+  }
   // prime media elements
   for(const a of activeClipsAt(state.playhead)){
     const c=a.clip;
@@ -869,6 +890,48 @@ function renderFrame(t){
   for(const a of acts){
     drawClipTo(a.clip, t-a.clip.start, {ctx, W, H, videoEls:mediaEls, imageCache:imgCache});
   }
+  // waveform scope at bottom of canvas
+  drawWaveformScope(W,H,t);
+}
+// waveform audio scope — shows audio levels as a horizontal line at the bottom of the preview
+function drawWaveformScope(W,H,t){
+  let totalRMS=0, count=0;
+  for(const tr of state.tracks){
+    for(const c of tr.clips){
+      if(t>=c.start&&t<c.start+effDur(c)){
+        if(c.kind==='audio'&&mediaEls[c.mediaId]){
+          const el=mediaEls[c.mediaId]; const buf=el.buffered;
+          if(buf.length>0){
+            const srcT=(t-c.start)*c.speed+c.trimStart;
+            try{
+              const tmp=document.createElement('canvas');tmp.width=1;tmp.height=1;
+              const tc=tmp.getContext('2d');
+              tc.drawImage(el,0,0,1,1);
+              const d=tc.getImageData(0,0,1,1).data;
+              totalRMS+=(d[0]+d[1]+d[2])/3;count++;
+            }catch(e){}
+          }
+        }
+      }
+    }
+  }
+  if(count===0) return;
+  const avg=totalRMS/count/255;
+  const scopeY=H-20;
+  const scopeW=W*0.6;const scopeX=(W-scopeW)/2;
+  ctx.strokeStyle='rgba(0,255,100,'+(0.3+avg*0.7)+')';
+  ctx.lineWidth=2;ctx.beginPath();
+  ctx.moveTo(scopeX,scopeY);ctx.lineTo(scopeX+scopeW,scopeY);ctx.stroke();
+  // draw waveform peaks on the scope line
+  const center=scopeY;const amp=15;
+  ctx.strokeStyle='rgba(0,255,100,'+(0.5+avg)+')';ctx.lineWidth=1;ctx.beginPath();
+  ctx.moveTo(scopeX,center-avg*amp);ctx.lineTo(scopeX+scopeW,center+avg*amp);
+  ctx.stroke();ctx.beginPath();
+  ctx.moveTo(scopeX,center+avg*amp);ctx.lineTo(scopeX+scopeW,center-avg*amp);
+  ctx.stroke();
+  // RMS dot
+  ctx.fillStyle='rgba(0,255,100,'+(0.5+avg)+')';
+  ctx.beginPath();ctx.arc(scopeX+scopeW/2,center-avg*amp,3,0,Math.PI*2);ctx.fill();
 }
 const imgCache={};
 function hexToRgb(hex){
@@ -1581,7 +1644,29 @@ function renderExportFrame(c2,W,H,t,expEls,imageCache){
 let toastT;
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>el.classList.remove('show'),2200);}
 
-/* ---------- KEYBOARD SHORTCUTS PANEL ---------- */
+/* ---------- KEYFRAME DIAMOND MARKERS ON TIMELINE ---------- */
+function drawKeyframeDiamond(ctx,x,y,color,size){
+  size=size||5;
+  ctx.fillStyle=color;ctx.strokeStyle=color;ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(x,y-size);ctx.lineTo(x+size,y);ctx.lineTo(x,y+size);ctx.lineTo(x-size,y);
+  ctx.closePath();ctx.fill();
+}
+function renderKeyframeDiamonds(container,pxSec,trackStart,trackDur,c){
+  if(!c.keyframes) return;
+  const kfs=c.keyframes;
+  const colors={scale:'#FFD700',opacity:'#00FFFF',rotate:'#00FF00',x:'#FF4444',y:'#FF4444',filterBrightness:'#AA44FF',filterContrast:'#AA44FF',filterSaturation:'#AA44FF',volume:'#FF8800',pan:'#88FF88'};
+  for(const prop of Object.keys(kfs)){
+    const arr=kfs[prop];if(!arr||!arr.length)continue;
+    const color=colors[prop]||'#FFFFFF';
+    for(const kf of arr){
+      const kfX=(kf.t-trackStart)*pxSec;
+      if(kfX<0||kfX>container.clientWidth)continue;
+      const kfY=4+((prop==='volume'||prop==='pan')?18:0);
+      drawKeyframeDiamond(container,kfX+2,kfY,color,3);
+    }
+  }
+}
 function showShortcuts(){
   const shortcuts=[
     {key:'Space',action:'Play / Pause'},
