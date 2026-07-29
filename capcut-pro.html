@@ -406,7 +406,7 @@ function freeStart(track){
 function addTextClip(){
   const track=state.tracks.find(t=>t.kind==='text');
   const clip={id:uid(),mediaId:null,kind:'text',start:Math.max(0,state.playhead),dur:3,srcDur:3,
-    trimStart:0,trimEnd:0,speed:1,volume:1,filter:'none',fit:'cover',x:0,y:0,scale:1,rotate:0,
+    trimStart:0,trimEnd:0,speed:1,volume:1,filter:'none',fit:'cover',x:0,y:0,scale:1,rotate:0,speedCurve:[],
     text:'Double tap to edit',textStyle:{font:'700 64px Arial',color:'#ffffff',align:'center',
       bg:'rgba(0,0,0,0)',stroke:'#000000',strokeW:0,padding:14,shadow:8},
     anim:'fade',animDur:0.4,opacity:1};
@@ -486,7 +486,7 @@ function addTTSClip(){
   const track=state.tracks.find(t=>t.kind==='tts');
   initTTS();
   const clip={id:uid(),mediaId:null,kind:'tts',start:Math.max(0,state.playhead),dur:3,srcDur:3,
-    trimStart:0,trimEnd:0,speed:1,volume:1,filter:'none',fit:'cover',x:0,y:0,scale:1,rotate:0,
+    trimStart:0,trimEnd:0,speed:1,volume:1,filter:'none',fit:'cover',x:0,y:0,scale:1,rotate:0,speedCurve:[],
     text:'Type text to speak',voiceId:'en',pitch:50,speed:175,
     wav:null,anim:'none',opacity:1};
   track.clips.push(clip);
@@ -802,7 +802,7 @@ function play(){
     if(c.kind==='video'||c.kind==='audio'){
       const m=mediaById(c.mediaId); if(!m) continue;
       const el=getMediaEl(m);
-      const srcT=(state.playhead-c.start)*c.speed + c.trimStart;
+      const spd=speedAt(c,state.playhead-c.start);const srcT=(state.playhead-c.start)*spd + c.trimStart;
       try{el.currentTime=srcT;}catch(e){}
       el.muted = state.muted;
       el.volume = (c.kind==='audio')? (state.muted?0:c.volume) : (state.muted?0:(c.volume??1));
@@ -833,7 +833,7 @@ function syncClock(){
     const c=a.clip;
     if((c.kind==='video'||c.kind==='audio')&&mediaEls[c.mediaId]){
       const el=mediaEls[c.mediaId];
-      if(!state.playing){const srcT=(t-c.start)*c.speed+c.trimStart; try{el.currentTime=srcT;}catch(e){}}
+      if(!state.playing){const spd=speedAt(c,t-c.start);const srcT=(t-c.start)*spd+c.trimStart; try{el.currentTime=srcT;}catch(e){}}
     }
   }
 }
@@ -902,7 +902,7 @@ function drawWaveformScope(W,H,t){
         if(c.kind==='audio'&&mediaEls[c.mediaId]){
           const el=mediaEls[c.mediaId]; const buf=el.buffered;
           if(buf.length>0){
-            const srcT=(t-c.start)*c.speed+c.trimStart;
+            const spd=speedAt(c,t-c.start);const srcT=(t-c.start)*spd+c.trimStart;
             try{
               const tmp=document.createElement('canvas');tmp.width=1;tmp.height=1;
               const tc=tmp.getContext('2d');
@@ -971,7 +971,20 @@ function applyKeyframes(ctx,c,localT){
   if(kx!==undefined || ky!==undefined) ctx.translate(kx||0,ky||0);
 }
 // Shared draw core — used by BOTH live preview and export (so chroma key, filters,
-// transforms and text are identical in output). g = {ctx,W,H,videoEls,imageCache}
+const easeInOut=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+function speedAt(c,localT){
+  const curve=c.speedCurve;
+  if(!curve||!curve.length) return c.speed||1;
+  if(localT<=curve[0].t) return curve[0].v;
+  if(localT>=curve[curve.length-1].t) return curve[curve.length-1].v;
+  for(let i=0;i<curve.length-1;i++){
+    if(localT>=curve[i].t && localT<=curve[i+1].t){
+      const frac=(localT-curve[i].t)/(curve[i+1].t-curve[i].t||0.001);
+      return curve[i].v+(curve[i+1].v-curve[i].v)*easeInOut(frac);
+    }
+  }
+  return c.speed||1;
+}
 function drawClipTo(c, localT, g){
   const f=Filters[c.filter]?Filters[c.filter].css:'';
   if(c.kind==='video'||c.kind==='image'){
@@ -988,6 +1001,7 @@ function drawClipTo(c, localT, g){
     if(c.chroma&&c.chroma.on){ drawChroma(g,imgEl,nw,nh,c,f); return; }
     const CT=g.ctx;
     CT.save();
+    if(c.blendMode) CT.globalCompositeOperation=c.blendMode;
     applyKeyframes(CT,c,localT);
     // position keyframes (x/y movement)
     const kx=kfVal(c.keyframes,'x',localT);
@@ -1193,6 +1207,11 @@ function renderProps(){
   h+='<label>Y ('+Math.round((c.y||0))+'px)</label><input type="range" id="kfY" min="-500" max="500" value="'+(c.y||0)+'">';
   h+='<label>Opacity ('+Math.round((c.opacity??1)*100)+'%)</label><input type="range" id="kfOpacity" min="0" max="100" value="'+(Math.round((c.opacity??1)*100))+'">';
   h+='<label>Rotate ('+(c.rotate||0)+'°)</label><input type="range" id="kfRotate" min="-180" max="180" value="'+(c.rotate||0)+'">';
+  h+='<label>Blend</label><select id="blendMode"><option value="source-over">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="darken">Darken</option><option value="lighten">Lighten</option><option value="color-dodge">Color Dodge</option><option value="color-burn">Color Burn</option><option value="soft-light">Soft Light</option><option value="hard-light">Hard Light</option><option value="difference">Difference</option><option value="exclusion">Exclusion</option><option value="hue">Hue</option><option value="saturation">Saturation</option><option value="luminosity">Luminosity</option></select>';
+  h+='<label>Crossfade (s)</label><input type="range" id="crossfade" min="0" max="200" value="'+Math.round((c.crossfade||0)*100)+'">';
+  h+='<label>Speed</label><input type="range" id="speed" min="25" max="400" value="'+(c.speed*100)+'">';
+  h+='<label>Speed keyframes</label><div class="row" style="gap:4px"><button class="ghost" id="kfSpeedAdd" style="flex:1">+ Add speed key</button><span class="time" id="speedKfStatus"></span></div>';
+  h+='<label>Speed curve (t:v comma-separated)</label><input type="text" id="speedCurveText" value="'+(c.speedCurve||[]).map(p=>p.t.toFixed(1)+':'+p.v.toFixed(1)).join(', ')+'" placeholder="0:1, 3:0.5, 5:2">';
   h+='<label>Animation</label><select id="anim">'+Object.keys(Animations).map(k=>'<option value="'+k+'"'+(c.anim===k?' selected':'')+'>'+Animations[k].name+'</option>').join('')+'</select>';
   if(c.kind==='text'){
     h+='<label>Anim duration (s)</label><input type="range" id="animDur" min="10" max="200" value="'+(c.animDur*100)+'">';
@@ -1207,7 +1226,22 @@ function renderProps(){
   bind('opacity',e=>{c.opacity=+e.target.value/100;});
   bind('speed',e=>{const v=+e.target.value/100;c.speed=v;propsBody.querySelector('#speed').previousElementSibling.textContent='Speed ('+v+'x)';});
   bind('volume',e=>{const v=+e.target.value/100;c.volume=v;propsBody.querySelector('#volume').previousElementSibling.textContent='Volume ('+Math.round(v*100)+'%)';});
-  bind('filter',e=>{c.filter=e.target.value;});
+  bind('speedCurveText',e=>{
+    const text=e.target.value;
+    const pairs=text.split(',').map(s=>s.trim()).filter(Boolean).map(s=>{const [t,v]=s.split(':');return {t:+t,v:+v};}).filter(p=>!isNaN(p.t)&&!isNaN(p.v)&&p.v>0);
+    c.speedCurve=pairs.sort((a,b)=>a.t-b.t);
+    const el=document.getElementById('speedKfStatus');if(el)el.textContent=pairs.length+' keys';
+  });
+  bind('kfSpeedAdd',()=>{
+    const t=Math.round(state.playhead*100)/100;
+    const pairs=(c.speedCurve=c.speedCurve||[]);
+    const cur=pairs.find(p=>Math.abs(p.t-t)<0.05);
+    if(cur){cur.v=c.speed;}else{pairs.push({t,v:c.speed});pairs.sort((a,b)=>a.t-b.t);}
+    const el=document.getElementById('speedCurveText');if(el)el.value=pairs.map(p=>p.t.toFixed(1)+':'+p.v.toFixed(1)).join(', ');
+    const st=document.getElementById('speedKfStatus');if(st)st.textContent=pairs.length+' keys';
+  });
+  bind('blendMode',e=>{c.blendMode=e.target.value;});
+  bind('crossfade',e=>{c.crossfade=+e.target.value/100;});
   bind('kfScale',e=>{
     const v=+e.target.value/100; const prop=renderProps._kfProp||'scale';
     c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
@@ -1569,7 +1603,7 @@ async function startExport(){
         if((c.kind==='video'||c.kind==='audio')&&expEls[c.mediaId]){
           const el=expEls[c.mediaId];
           if(t>=c.start&&t<c.start+effDur(c)){
-            const srcT=(t-c.start)*c.speed+c.trimStart;
+            const spd=speedAt(c,t-c.start);const srcT=(t-c.start)*spd+c.trimStart;
             if(Math.abs(el.currentTime-srcT)>0.2){try{el.currentTime=srcT;}catch(e){}}
             if(el.paused) el.play().catch(()=>{});
             el.volume=(c.kind==='audio')?(state.muted?0:c.volume):(state.muted?0:(c.volume??1));
