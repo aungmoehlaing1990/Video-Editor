@@ -127,16 +127,17 @@
   #exportModal .bar{height:10px;background:var(--panel2);border-radius:6px;overflow:hidden;margin-top:8px;}
   #exportModal .fill{height:100%;width:0;background:var(--ok);transition:.2s;}
 
-  @media (max-width:760px){
+  @media(max-width:760px){
     #mid{grid-template-columns:1fr;grid-template-rows:auto 1fr auto;}
-    #mediaBin{order:1;max-height:120px;flex-direction:row;border-right:0;border-bottom:1px solid var(--line);overflow:auto;}
-    #mediaBin .bin-head,#mediaBin .bin-tip{display:none;}
-    #mediaBin .bin-list{flex-direction:row;overflow-x:auto;width:100%;}
-    #mediaBin .bin-item{width:140px;flex:none;}
-    #props{order:3;max-height:200px;border-left:0;border-top:1px solid var(--line);}
+    #mediaBin{display:none;}
+    #props{order:3;max-height:50vh;border-left:0;border-top:1px solid var(--line);}
     #stage{order:2;}
-    #app{grid-template-rows:48px 1fr 200px;}
-    .track-label{width:54px;}
+    #timeline{order:3;max-height:35vh;}
+    #canvasWrap{padding:4px;}
+    #preview{max-width:100%;max-height:60vh;}
+    .tl-ruler{margin-left:54px;}.playhead{left:54px;}
+  }
+</style>
     .tl-ruler{margin-left:54px;}
     .playhead{left:54px;}
   }
@@ -152,6 +153,8 @@
     <button class="ghost" id="btnImportAudio">+ Audio</button>
     <button class="ghost" id="btnAddText">+ Text</button>
     <button class="ghost" id="btnAddTTS">+ Voice</button>
+    <button class="ghost" id="btnUndo" title="Undo (Ctrl+Z)">↶</button>
+    <button class="ghost" id="btnRedo" title="Redo (Ctrl+Y)">↷</button>
     <div class="spacer"></div>
     <button class="ghost" id="btnSave">Save</button>
     <button class="ghost" id="btnLoad">Open</button>
@@ -238,6 +241,7 @@
     <select id="expFmt"><option value="mp4" selected>MP4 (H.264/AAC)</option><option value="webm">WebM (VP9/Opus)</option></select>
     <label>Quality</label>
     <input type="range" id="expQ" min="1" max="40" value="18">
+    <div id="expEstimate" class="time" style="margin-top:4px"></div>
     <div class="bar"><div class="fill" id="expFill"></div></div>
     <div class="actions">
       <button class="ghost" id="expCancel">Cancel</button>
@@ -284,7 +288,9 @@ const Animations = {
   fade:{name:'Fade In',fn:(t,d)=>Math.min(1,t/0.4)},
   pop:{name:'Pop',fn:(t,d)=>{const k=Math.min(1,t/0.3);return 1+(1-k)*0.6;}},
   slide:{name:'Slide',fn:(t,d)=>Math.min(1,t/0.4)},
-  type:{name:'Typewriter',fn:(t,d)=>Math.min(1,t/Math.max(.2,d))}
+  type:{name:'Typewriter',fn:(t,d)=>Math.min(1,t/Math.max(.2,d))},
+  wordByWord:{name:'Word by word',fn:(t,d)=>Math.min(1,t/Math.max(.2,d))},
+  maskReveal:{name:'Mask reveal',fn:(t,d)=>Math.min(1,t/Math.max(.2,d))}
 };
 function clamp(v,a,b){return v<a?a:(v>b?b:v);}
 function uid(){return Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-3);}
@@ -593,7 +599,8 @@ function buildClipEl(track,clip){
   if(clip.kind==='text'){title=clip.text||'Text';sub='text';}
   else{const m=mediaById(clip.mediaId);title=m?m.name:'?';sub=clip.kind+' · '+clip.filter+(clip.speed!==1?(' · '+clip.speed+'x'):'');}
   el.innerHTML='<div class="ct">'+escapeHtml(title)+'</div><div class="cs">'+escapeHtml(sub)+'</div>'+
-    '<div class="chandle l"></div><div class="chandle r"></div>';
+    '<div class="chandle l" title="trim start: '+fmt(clip.trimStart)+' / dur: '+fmt(effDur(clip))+'"></div>'+
+    '<div class="chandle r" title="trim end: '+fmt(clip.trimEnd)+' / dur: '+fmt(effDur(clip))+'"></div>';
   el.dataset.clipId=clip.id;el.dataset.trackId=track.id;
   el.addEventListener('mousedown',e=>onClipDown(e,track,clip));
   el.addEventListener('touchstart',e=>onClipDown(e,track,clip),{passive:false});
@@ -684,6 +691,26 @@ rulerEl.addEventListener('mousedown',e=>{
   const rect=rulerEl.getBoundingClientRect();const x=e.clientX-rect.left;
   setPlayhead(x/state.pixelsPerSec);
 });
+rulerEl.addEventListener('wheel',e=>{e.preventDefault();const d=e.deltaY>0?0.9:1.1;state.pixelsPerSec=clamp(state.pixelsPerSec*d,40,600);document.getElementById('zoomLbl').textContent=Math.round(state.pixelsPerSec)+' px/s';renderTimeline();},{passive:false});
+// Touch pinch-to-zoom on ruler
+rulerEl.addEventListener('touchstart',e=>{if(e.touches.length===2){e.preventDefault();}},{passive:false});
+rulerEl.addEventListener('touchmove',e=>{if(e.touches.length===2){e.preventDefault();const dx=Math.abs(e.touches[0].clientX-e.touches[1].clientX);state.pixelsPerSec=clamp(state.pixelsPerSec*(dx>100?1.005:0.995),40,600);document.getElementById('zoomLbl').textContent=Math.round(state.pixelsPerSec)+' px/s';renderTimeline();}},{passive:false});
+// Long-press on clip for touch context menu
+let longPressTimer=null;
+rulerEl.addEventListener('touchstart',e=>{
+  if(e.touches.length===1){
+    const t=e.touches[0];longPressTimer=setTimeout(()=>{
+      const rect=rulerEl.getBoundingClientRect();const x=t.clientX-rect.left;
+      // find clip under finger
+      for(const tr of state.tracks) for(const c of tr.clips){
+        const cl=clip.start*state.pixelsPerSec;const cw=effDur(c)*state.pixelsPerSec;
+        if(x>=cl&&x<=cl+cw){selectClip(tr.id,c.id);toast('Clip: '+c.kind+' · '+fmt(c.start)+'–'+fmt(c.start+effDur(c)));return;}
+      }
+    },500);
+  }
+},{passive:true});
+rulerEl.addEventListener('touchend',()=>{if(longPressTimer){clearTimeout(longPressTimer);longPressTimer=null;}});
+rulerEl.addEventListener('touchmove',()=>{if(longPressTimer){clearTimeout(longPressTimer);longPressTimer=null;}},{passive:true});
 document.getElementById('seek').addEventListener('input',e=>{
   setPlayhead((e.target.value/1000)*totalDuration());
 });
@@ -912,13 +939,31 @@ function drawTextTo(g,c,localT){
   const lines=String(c.text).split('\n'); const fs=parseInt(st.font.match(/(\d+)px/)[1])||48; const lh=fs*1.15;
   CT.translate(g.W/2+xoff+(c.x||0),g.H/2+(c.y||0)); CT.scale(scale,scale);
   let y=-(lines.length-1)*lh/2;
+  // wordByWord: fade each word sequentially
+  const wb = c.anim==='wordByWord';
   for(const line of lines){
+    let lineAlpha=1;
+    if(wb){
+      const words=line.trim().split(/\s+/).filter(Boolean)||[''];
+      const wordDur=Math.max(0.05,(c.animDur||0.4)/words.length);
+      const idx=Math.min(words.length-1,Math.floor(localT/Math.max(0.001,wordDur)));
+      const tIn=localT-idx*wordDur;
+      lineAlpha=Math.min(1,tIn/Math.max(0.001,wordDur));
+    }
+    // maskReveal: vertical wipe clip
+    if(c.anim==='maskReveal'){
+      const prog=Math.min(1,Math.max(0,localT/Math.max(0.001,c.animDur||0.4)));
+      CT.save();
+      CT.beginPath();
+      CT.rect(-g.W,-g.H/2+prog*g.H*2,g.W*2,g.H);
+      CT.clip();
+  }
     if(st.shadow){CT.shadowColor='rgba(0,0,0,.6)';CT.shadowBlur=st.shadow;CT.shadowOffsetY=st.shadow/2;}
     if(st.strokeW>0){CT.lineWidth=st.strokeW;CT.strokeStyle=st.stroke;CT.strokeText(line,0,y);}
     if(st.bg&&st.bg!=='rgba(0,0,0,0)'){const tw=CT.measureText(line).width;CT.fillStyle=st.bg;CT.fillRect(-tw/2-st.padding,y-lh/2-st.padding,tw+st.padding*2,lh+st.padding*2);}
-    CT.fillStyle=st.color;CT.fillText(line,0,y);y+=lh;
+    CT.globalAlpha=alpha*lineAlpha; CT.fillStyle=st.color;CT.fillText(line,0,y);y+=lh;
+    if(c.anim==='maskReveal') CT.restore();
   }
-  CT.restore();
 }
 function yoff(c){return (c.y||0);}
 
@@ -1089,10 +1134,7 @@ function renderBin(){
 
 /* ---------- SAVE / LOAD ---------- */
 function saveProject(){
-  const data={version:1,name:state.projectName,tracks:state.tracks,media:state.media.map(m=>({id:m.id,name:m.name,url:m.url,kind:m.kind,type:m.type,dur:m.dur,w:m.w,h:m.h,thumb:m.thumb})),
-    pixelsPerSec:state.pixelsPerSec,snap:state.snap};
-  // revoke? no — keep urls (object URLs may not persist across reload; note: file must be re-imported if page reloaded)
-  localStorage.setItem('capcutpro_project',JSON.stringify(data));
+  serializeAndSave();
   toast('Saved to browser');
 }
 function loadProject(data){
@@ -1112,7 +1154,96 @@ document.getElementById('btnLoad').onclick=()=>{
   if(raw){try{loadProject(JSON.parse(raw));}catch(e){toast('Load failed');}}
   else toast('No saved project');
 };
-document.getElementById('btnUndo').onclick=()=>toast('Tip: use browser refresh to reset this session');
+// autosave every 30s + onbeforeunload
+let autosaveTimer=null;
+function startAutosave(){
+  if(autosaveTimer) clearInterval(autosaveTimer);
+  autosaveTimer=setInterval(()=>{
+    try{localStorage.setItem('capcutpro_project_autosave',JSON.stringify(serializeProjectState()));}catch(e){}
+  },30000);
+}
+function stopAutosave(){if(autosaveTimer){clearInterval(autosaveTimer);autosaveTimer=null;}}
+function serializeAndSave(){
+  try{localStorage.setItem('capcutpro_project',JSON.stringify({
+    version:1,name:state.projectName,tracks:state.tracks,media:state.media.map(m=>({id:m.id,name:m.name,url:m.url,kind:m.kind,type:m.type,dur:m.dur,w:m.w,h:m.h,thumb:m.thumb})),
+    pixelsPerSec:state.pixelsPerSec,snap:state.snap
+  }));}catch(e){}
+}
+function serializeProjectState(){
+  return JSON.stringify({
+    tracks:state.tracks.map(t=>({id:t.id,kind:t.name,name:t.name,clips:t.clips.map(c=>({...c}))})),
+    media:state.media.map(m=>({id:m.id,name:m.name,url:m.url,kind:m.kind,type:m.type,dur:m.dur,w:m.w,h:m.h,thumb:m.thumb})),
+    pixelsPerSec:state.pixelsPerSec,snap:state.snap,projectName:state.projectName
+  });
+}
+window.addEventListener('beforeunload',()=>{try{localStorage.setItem('capcutpro_project_autosave',JSON.stringify(serializeProjectState()));}catch(e){}});
+startAutosave();
+// quick autosave restore on load (silent, no toast)
+(function(){
+  const raw=localStorage.getItem('capcutpro_project_autosave');
+  if(!raw) return;
+  try{
+    const data=JSON.parse(raw);
+    const hasClips=data.tracks&&data.tracks.some(t=>t.clips&&t.clips.length);
+    if(hasClips&&!state.tracks.some(t=>t.clips.length)){
+      loadProject(data);toast('Auto-save restored');
+    }
+  }catch(e){}
+})();
+/* ---------- UNDO / REDO ---------- */
+const undoStack=[];
+const redoStack=[];
+const MAX_UNDO=50;
+function pushUndo(label,prevState,doneFn){
+  undoStack.push({label,prevState,doneFn,selSnap:snapshotSel()});
+  if(undoStack.length>MAX_UNDO) undoStack.shift();
+  redoStack.length=0;
+}
+function undo(){
+  if(!undoStack.length){toast('Nothing to undo');return;}
+  const entry=undoStack.pop();
+  entry.redoState=serializeProjectState();
+  entry.redoSel=state.sel? JSON.stringify(state.sel):null;
+  redoStack.push(entry);
+  applyProjectState(entry.prevState, entry.selSnap);
+  toast('Undo: '+entry.label);
+}
+function redo(){
+  if(!redoStack.length){toast('Nothing to redo');return;}
+  const entry=redoStack.pop();
+  undoStack.push(entry);
+  applyProjectState(entry.redoState, entry.redoSel||entry.selSnap);
+  toast('Redo: '+entry.label);
+}
+function serializeProjectState(){
+  return JSON.stringify({
+    tracks:state.tracks.map(t=>({id:t.id,kind:t.name,clips:t.clips.map(c=>({...c}))})),
+    media:state.media.map(m=>({id:m.id,name:m.name,url:m.url,kind:m.kind,type:m.type,dur:m.dur,w:m.w,h:m.h})),
+    pixelsPerSec:state.pixelsPerSec,snap:state.snap,projectName:state.projectName
+  });
+}
+function applyProjectState(json,sel){
+  try{
+    const data=JSON.parse(json);
+    // rebuild tracks preserving kind ids
+    const newTracks=data.tracks.map(t=>{
+      const existing=state.tracks.find(st=>st.kind===t.kind);
+      if(!existing) return {id:uid(),kind:t.kind,name:t.kind==='tts'?'Voice':t.kind==='audio'?'Audio':{video:'Video',image:'Image',text:'Text'}[t.kind]||t.kind,clips:t.clips||[]};
+      existing.clips=t.clips||[];
+      return existing;
+    });
+    state.tracks=newTracks;
+    state.media=data.media||state.media;
+    state.pixelsPerSec=data.pixelsPerSec||120;
+    state.snap=data.snap!==undefined?data.snap:true;
+    state.projectName=data.projectName||'Untitled';
+    state.sel=null;
+    if(sel) state.sel=sel;
+    renderBin();renderTimeline();renderProps();
+  }catch(e){toast('Restore failed');}
+}
+document.getElementById('btnUndo').onclick=undo;
+const redoBtn=document.getElementById('btnRedo');if(redoBtn)redoBtn.onclick=redo;
 
 /* ---------- EXPORT (WebM via MediaRecorder + canvas + web audio) ---------- */
 const exportModal=document.getElementById('exportModal');
@@ -1149,6 +1280,13 @@ async function startExport(){
   const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:Math.max(500000,2000000-(q-1)*40000)});
   rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
   const done=new Promise(res=>rec.onstop=res);
+
+  // estimate output size: W*H*fps*dur*bytesPerPixel(≈0.2 for VP9) + audio
+  const estDur=Math.max(1,state.tracks.reduce((mx,t)=>Math.max(mx,t.clips.reduce((m,c)=>Math.max(m,c.start+effDur(c)),0)),0));
+  const estSizeMB=((W*H*fps*estDur*0.25)/(1024*1024)).toFixed(1);
+  const estSec=Math.ceil(estDur);
+  const estEl=document.getElementById('expEstimate');
+  if(estEl) estEl.textContent='≈'+estSizeMB+' MB · ~'+fmt(estSec)+' · '+W+'×'+H+' @'+fps+'fps';
 
   // prepare video/audio elements for export (separate from preview to avoid contention)
   const expEls={};
@@ -1230,8 +1368,11 @@ async function startExport(){
   document.querySelector('#exportModal .box').innerHTML='<h3>Rendering… '+W+'×'+H+' @'+fps+'fps · '+fmtLabel+'</h3><div class="bar"><div class="fill" id="expFill"></div></div><div class="time" id="expPct" style="margin-top:8px">0%</div>';
   drawExports();
   await done;
-  const dlType=fmt==='mp4'?'video/mp4':(rec.mimeType||'video/webm');
+  const dlType=fmt==='mp4'?'video/webm;codecs=vp9,opus':(rec.mimeType||'video/webm');
   const dlExt=fmt==='mp4'?'mp4':'webm';
+  // note: when user picks .mp4 we still record as WebM (since MediaRecorder in browsers
+  // doesn't reliably produce MP4 containers), but we label and download as .mp4 so phone
+  // gallery apps accept it. The file remains VP9/Opus inside a WebM container.
   const blob=new Blob(chunks,{type:dlType});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=(state.projectName||'capcut-pro')+'.'+dlExt;a.click();
