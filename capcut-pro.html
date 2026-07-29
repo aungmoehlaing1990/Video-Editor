@@ -731,29 +731,29 @@ document.getElementById('btnSplit').onclick=()=>{
   if(!state.sel) return;
   const c=findClip(state.sel.clipId); if(c) splitAtClip(c.clip);
 };
+document.getElementById('btnDel').onclick=()=>{
+  if(!state.sel) return;
+  const fc=findClip(state.sel.clipId); if(fc) deleteClipAt(fc.clip.id);
+};
 
-/* ---------- PLAYBACK ---------- */
-const canvas=document.getElementById('preview');
-const ctx=canvas.getContext('2d');
-let mediaEls={}; // mediaId -> HTMLVideo/HTMLAudio element (for playback)
-function getMediaEl(m){
-  if(!mediaEls[m.id]){
-    let el;
-    if(m.kind==='video'){el=document.createElement('video');el.src=m.url;el.crossOrigin='anonymous';el.playsInline=true;}
-    else if(m.kind==='audio'){el=document.createElement('audio');el.src=m.url;el.crossInline=true;}
-    else return null;
-    mediaEls[m.id]=el;
+// Audio ducking: auto-lowercase music when voiceover/TTS is active
+function applyAudioDucking(t){
+  if(state.muted || !audioCtxMix) return;
+  let hasVoice=false;
+  for(const tr of state.tracks){
+    for(const cl of tr.clips){
+      if(t>=cl.start && t<cl.start+effDur(cl)){hasVoice=true;break;}
+    }
+    if(hasVoice) break;
   }
-  return mediaEls[m.id];
-}
-function activeClipsAt(t){
-  const out=[];
-  for(const tr of state.tracks) for(const c of tr.clips){
-    const d=effDur(c);
-    if(t>=c.start&&t<c.start+d) out.push({track:tr,clip:c});
+  if(!hasVoice) return;
+  for(const id in mediaEls){
+    const el=mediaEls[id]; const m=mediaById(id);
+    if(!m||m.kind!=='audio') continue;
+    if(el.volume>0.25) el.volume=Math.max(0.25,el.volume*(1-0.15));
   }
-  return out;
 }
+
 function play(){
   if(state.playing) return;
   if(state.playhead>=totalDuration()-0.05) state.playhead=0;
@@ -823,6 +823,8 @@ function tick(){
       el.volume = (c.kind==='audio')? (state.muted?0:c.volume) : (state.muted?0:(c.volume??1));
     }
   }
+  // AUDIO DUCKING: when TTS/voice is active, auto-lower music
+  applyAudioDucking(t);
   tickTTS(t);
   requestAnimationFrame(tick);
 }
@@ -891,6 +893,9 @@ function applyKeyframes(ctx,c,localT){
   }
   const rv=kfVal(c.keyframes,'rotate',localT);
   if(rv!==undefined) ctx.rotate(rv*Math.PI/180);
+  const kx=kfVal(c.keyframes,'x',localT);
+  const ky=kfVal(c.keyframes,'y',localT);
+  if(kx!==undefined || ky!==undefined) ctx.translate(kx||0,ky||0);
 }
 // Shared draw core — used by BOTH live preview and export (so chroma key, filters,
 // transforms and text are identical in output). g = {ctx,W,H,videoEls,imageCache}
@@ -911,7 +916,24 @@ function drawClipTo(c, localT, g){
     const CT=g.ctx;
     CT.save();
     applyKeyframes(CT,c,localT);
-    if(f) CT.filter=f;
+    // position keyframes (x/y movement)
+    const kx=kfVal(c.keyframes,'x',localT);
+    const ky=kfVal(c.keyframes,'y',localT);
+    const px=(kx!==undefined?kx:c.x)||0;
+    const py=(ky!==undefined?ky:c.y)||0;
+    CT.translate(px,py);
+    // filter keyframes: animate brightness/contrast/saturation
+    let dynamicFilter=f;
+    const bf=kfVal(c.keyframes,'filterBrightness',localT);
+    const cf=kfVal(c.keyframes,'filterContrast',localT);
+    const sf=kfVal(c.keyframes,'filterSaturation',localT);
+    if(bf!==undefined||cf!==undefined||sf!==undefined){
+      const bVal=bf!==undefined?bf:100;
+      const cVal=cf!==undefined?cf:100;
+      const sVal=sf!==undefined?sf:100;
+      dynamicFilter=f+' brightness('+bVal+'%) contrast('+cVal+'%) saturate('+sVal+'%)';
+    }
+    if(dynamicFilter) CT.filter=dynamicFilter;
     CT.globalAlpha=c.opacity??1;
     CT.translate(g.W/2,g.H/2); CT.translate(c.x,c.y); CT.rotate((c.rotate||0)*Math.PI/180); CT.scale(c.scale,c.scale); CT.translate(-g.W/2,-g.H/2);
     drawFitTo(CT,imgEl,nw,nh,g.W,g.H,c.fit);
@@ -1056,6 +1078,8 @@ function renderProps(){
   h+='<div class="seg" id="kfPropSeg"><button data-v="scale" class="'+(renderProps._kfProp==='scale'?'on':'')+'">Scale</button><button data-v="opacity" class="'+(renderProps._kfProp==='opacity'?'on':'')+'">Opacity</button><button data-v="rotate" class="'+(renderProps._kfProp==='rotate'?'on':'')+'">Rotate</button></div>';
   h+='<div class="row" style="margin-top:6px"><button class="primary" id="kfAdd" style="flex:1">+ Add Keyframe</button><span class="time" id="kfStatus"></span></div>';
   h+='<label>Scale ('+Math.round((c.scale||1)*100)+'%)</label><input type="range" id="kfScale" min="10" max="300" value="'+(c.scale*100)+'">';
+  h+='<label>X ('+Math.round((c.x||0))+'px)</label><input type="range" id="kfX" min="-500" max="500" value="'+(c.x||0)+'">';
+  h+='<label>Y ('+Math.round((c.y||0))+'px)</label><input type="range" id="kfY" min="-500" max="500" value="'+(c.y||0)+'">';
   h+='<label>Opacity ('+Math.round((c.opacity??1)*100)+'%)</label><input type="range" id="kfOpacity" min="0" max="100" value="'+(Math.round((c.opacity??1)*100))+'">';
   h+='<label>Rotate ('+(c.rotate||0)+'°)</label><input type="range" id="kfRotate" min="-180" max="180" value="'+(c.rotate||0)+'">';
   h+='<label>Animation</label><select id="anim">'+Object.keys(Animations).map(k=>'<option value="'+k+'"'+(c.anim===k?' selected':'')+'>'+Animations[k].name+'</option>').join('')+'</select>';
@@ -1075,6 +1099,20 @@ function renderProps(){
   bind('filter',e=>{c.filter=e.target.value;});
   bind('kfScale',e=>{
     const v=+e.target.value/100; const prop=renderProps._kfProp||'scale';
+    c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
+    const t=Math.round(state.playhead*100)/100;
+    const kf=c.keyframes[prop].find(k=>Math.abs(k.t-t)<0.01);
+    if(kf){kf.v=v} else {c.keyframes[prop].push({t,v});} renderProps();
+  });
+  bind('kfX',e=>{
+    const v=+e.target.value; const prop=renderProps._kfProp||'x';
+    c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
+    const t=Math.round(state.playhead*100)/100;
+    const kf=c.keyframes[prop].find(k=>Math.abs(k.t-t)<0.01);
+    if(kf){kf.v=v} else {c.keyframes[prop].push({t,v});} renderProps();
+  });
+  bind('kfY',e=>{
+    const v=+e.target.value; const prop=renderProps._kfProp||'y';
     c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
     const t=Math.round(state.playhead*100)/100;
     const kf=c.keyframes[prop].find(k=>Math.abs(k.t-t)<0.01);
@@ -1162,6 +1200,21 @@ document.getElementById('textOk').onclick=()=>{
   if(c){c.text=document.getElementById('textInput').value;updateClipUI(c);renderProps();}
   textModal.classList.add('hidden');
 };
+// ripple delete: removes clip and shifts subsequent clips left to close the gap
+function deleteClipAt(clipId){
+  for(const tr of state.tracks){
+    const idx=tr.clips.findIndex(c=>c.id===clipId);
+    if(idx===-1) continue;
+    const removed=tr.clips[idx];
+    const gapDur=effDur(removed);
+    tr.clips.splice(idx,1);
+    for(let i=idx;i<tr.clips.length;i++) tr.clips[i].start=Math.max(0,tr.clips[i].start-gapDur);
+    renderTimeline();renderProps();toast('Deleted clip (ripple)');return;
+  }
+  toast('Clip not found');
+}
+// legacy delete (kept for backward compat)
+function deleteClip(c){ deleteClipAt(c.id); }
 
 /* ---------- DELETE / DUPLICATE ---------- */
 document.getElementById('btnDel').onclick=()=>{
