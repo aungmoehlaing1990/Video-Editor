@@ -864,6 +864,34 @@ function hexToRgb(hex){
   if(h.length===3) return [parseInt(h[0]+h[0],16),parseInt(h[1]+h[1],16),parseInt(h[2]+h[2],16)];
   return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)];
 }
+/* ---------- KEYFRAME ENGINE ---------- */
+const Easings={linear:t=>t,easeIn:t=>t*t*t,easeOut:t=>1-Math.pow(1-t,3),easeInOut:t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2};
+function kfVal(kfs,prop,t){
+  if(!kfs||!kfs[prop]) return undefined;
+  const sk=kfs[prop].slice().sort((a,b)=>a.t-b.t);
+  if(!sk.length) return undefined;
+  if(t<=sk[0].t) return sk[0].v;
+  if(t>=sk[sk.length-1].t) return sk[sk.length-1].v;
+  for(let i=0;i<sk.length-1;i++){
+    const a=sk[i],b=sk[i+1];
+    if(t>=a.t&&t<=b.t){
+      const dur=Math.max(0.001,b.t-a.t);
+      const frac=Math.max(0,Math.min(1,(t-a.t)/dur));
+      return a.v+(b.v-a.v)*Easings[a.ease||'linear'](frac);
+    }
+  }
+  return sk[sk.length-1].v;
+}
+function applyKeyframes(ctx,c,localT){
+  const sv=kfVal(c.keyframes,'scale',localT);
+  if(sv!==undefined) ctx.scale(sv,sv);
+  const ov=kfVal(c.keyframes,'opacity',localT);
+  if(ov!==undefined){
+    if(ctx.globalAlpha>0) ctx.globalAlpha*=ov;
+  }
+  const rv=kfVal(c.keyframes,'rotate',localT);
+  if(rv!==undefined) ctx.rotate(rv*Math.PI/180);
+}
 // Shared draw core — used by BOTH live preview and export (so chroma key, filters,
 // transforms and text are identical in output). g = {ctx,W,H,videoEls,imageCache}
 function drawClipTo(c, localT, g){
@@ -882,6 +910,7 @@ function drawClipTo(c, localT, g){
     if(c.chroma&&c.chroma.on){ drawChroma(g,imgEl,nw,nh,c,f); return; }
     const CT=g.ctx;
     CT.save();
+    applyKeyframes(CT,c,localT);
     if(f) CT.filter=f;
     CT.globalAlpha=c.opacity??1;
     CT.translate(g.W/2,g.H/2); CT.translate(c.x,c.y); CT.rotate((c.rotate||0)*Math.PI/180); CT.scale(c.scale,c.scale); CT.translate(-g.W/2,-g.H/2);
@@ -934,6 +963,7 @@ function drawTextTo(g,c,localT){
   const an=Animations[c.anim];
   if(an&&an.fn){alpha=clamp(an.fn(localT,c.dur),0,1); if(c.anim==='pop')scale=an.fn(localT,c.dur); if(c.anim==='slide')xoff=(1-an.fn(localT,c.dur))*g.W*0.4;}
   CT.save();
+  applyKeyframes(CT,c,localT);
   CT.globalAlpha=alpha;
   CT.font=st.font; CT.textAlign=st.align||'center'; CT.textBaseline='middle';
   const lines=String(c.text).split('\n'); const fs=parseInt(st.font.match(/(\d+)px/)[1])||48; const lh=fs*1.15;
@@ -1021,6 +1051,13 @@ function renderProps(){
     h+='<label>Alignment</label><div class="seg" id="alignSeg"><button data-v="left" class="'+(c.textStyle.align==='left'?'on':'')+'">Left</button><button data-v="center" class="'+(c.textStyle.align==='center'?'on':'')+'">Center</button><button data-v="right" class="'+(c.textStyle.align==='right'?'on':'')+'">Right</button></div>';
     h+='<label>Background</label><input type="color" id="tbg" value="'+rgbToHex(c.textStyle.bg)+'">';
   }
+  // Keyframe property selector + button
+  h+='<div class="subhead">Keyframes</div>';
+  h+='<div class="seg" id="kfPropSeg"><button data-v="scale" class="'+(renderProps._kfProp==='scale'?'on':'')+'">Scale</button><button data-v="opacity" class="'+(renderProps._kfProp==='opacity'?'on':'')+'">Opacity</button><button data-v="rotate" class="'+(renderProps._kfProp==='rotate'?'on':'')+'">Rotate</button></div>';
+  h+='<div class="row" style="margin-top:6px"><button class="primary" id="kfAdd" style="flex:1">+ Add Keyframe</button><span class="time" id="kfStatus"></span></div>';
+  h+='<label>Scale ('+Math.round((c.scale||1)*100)+'%)</label><input type="range" id="kfScale" min="10" max="300" value="'+(c.scale*100)+'">';
+  h+='<label>Opacity ('+Math.round((c.opacity??1)*100)+'%)</label><input type="range" id="kfOpacity" min="0" max="100" value="'+(Math.round((c.opacity??1)*100))+'">';
+  h+='<label>Rotate ('+(c.rotate||0)+'°)</label><input type="range" id="kfRotate" min="-180" max="180" value="'+(c.rotate||0)+'">';
   h+='<label>Animation</label><select id="anim">'+Object.keys(Animations).map(k=>'<option value="'+k+'"'+(c.anim===k?' selected':'')+'>'+Animations[k].name+'</option>').join('')+'</select>';
   if(c.kind==='text'){
     h+='<label>Anim duration (s)</label><input type="range" id="animDur" min="10" max="200" value="'+(c.animDur*100)+'">';
@@ -1036,6 +1073,44 @@ function renderProps(){
   bind('speed',e=>{const v=+e.target.value/100;c.speed=v;propsBody.querySelector('#speed').previousElementSibling.textContent='Speed ('+v+'x)';});
   bind('volume',e=>{const v=+e.target.value/100;c.volume=v;propsBody.querySelector('#volume').previousElementSibling.textContent='Volume ('+Math.round(v*100)+'%)';});
   bind('filter',e=>{c.filter=e.target.value;});
+  bind('kfScale',e=>{
+    const v=+e.target.value/100; const prop=renderProps._kfProp||'scale';
+    c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
+    const t=Math.round(state.playhead*100)/100;
+    const kf=c.keyframes[prop].find(k=>Math.abs(k.t-t)<0.01);
+    if(kf){kf.v=v} else {c.keyframes[prop].push({t,v});} renderProps();
+  });
+  bind('kfOpacity',e=>{
+    const v=+e.target.value/100; const prop=renderProps._kfProp||'opacity';
+    c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
+    const t=Math.round(state.playhead*100)/100;
+    const kf=c.keyframes[prop].find(k=>Math.abs(k.t-t)<0.01);
+    if(kf){kf.v=v} else {c.keyframes[prop].push({t,v});} renderProps();
+  });
+  bind('kfRotate',e=>{
+    const v=+e.target.value; const prop=renderProps._kfProp||'rotate';
+    c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
+    const t=Math.round(state.playhead*100)/100;
+    const kf=c.keyframes[prop].find(k=>Math.abs(k.t-t)<0.01);
+    if(kf){kf.v=v} else {c.keyframes[prop].push({t,v});} renderProps();
+  });
+  // Keyframe add button
+  const kfAdd=propsBody.querySelector('#kfAdd');
+  if(kfAdd) kfAdd.onclick=()=>{
+    const prop=renderProps._kfProp||'scale';
+    const kfs=(c.keyframes||(c.keyframes={}))[prop]||(c.keyframes[prop]=[]);
+    const t=Math.round(state.playhead*100)/100;
+    if(kfs.find(k=>Math.abs(k.t-t)<0.01)){toast('Keyframe exists at '+fmt(t));return;}
+    const {scale,opacity,rotate}=c;
+    const kfsArr=c.keyframes[prop];
+    const curVal={'scale':scale,'opacity':opacity??1,'rotate':rotate||0}[prop];
+    kfsArr.push({t,v:curVal});
+    toast('Added '+prop+' keyframe at '+fmt(t)); renderProps();
+  };
+  // Keyframe property selector
+  propsBody.querySelectorAll('#kfPropSeg button').forEach(btn=>{
+    btn.onclick=()=>{renderProps._kfProp=btn.dataset.v;renderProps();};
+  });
   bind('anim',e=>{c.anim=e.target.value;});
   bind('animDur',e=>{c.animDur=+e.target.value/100;});
   bind('txt',e=>{c.text=e.target.value;updateClipUI(c);});
