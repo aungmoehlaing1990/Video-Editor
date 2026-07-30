@@ -152,6 +152,9 @@
     <button class="ghost" id="btnImportImage">+ Image</button>
     <button class="ghost" id="btnImportAudio">+ Audio</button>
     <button class="ghost" id="btnAddText">+ Text</button>
+    <button class="ghost" id="btnSub">+ Subtitle</button>
+    <button class="ghost" id="btnImportSRT">SRT In</button>
+    <button class="ghost" id="btnExportSRT">SRT Out</button>
     <button class="ghost" id="btnAddTTS">+ Voice</button>
     <button class="ghost" id="btnUndo" title="Undo (Ctrl+Z)">↶</button>
     <button class="ghost" id="btnRedo" title="Redo (Ctrl+Y)">↷</button>
@@ -160,6 +163,7 @@
     <button class="ghost" id="btnLoad">Open</button>
     <button class="ghost" id="btnUndo">Undo</button>
     <button class="primary" id="btnExport">Export</button>
+    <input type="file" id="fileInputSRT" accept=".srt,.vtt,.txt" class="hidden">
     <input type="file" id="fileInput" accept="video/*,image/*,audio/*" multiple class="hidden">
   </div>
 
@@ -423,6 +427,95 @@ function addTextClip(){
 }
 document.getElementById('btnAddText').onclick=addTextClip;
 
+/* ---------- SUBTITLE ENGINE ---------- */
+let _subSeq=0;
+function addSubtitleLines(lines){
+  const track=state.tracks.find(t=>t.kind==='text');
+  const start0=state.sel?(()=>{const c=findClip(state.sel.clipId);return c?c.start:Math.max(0,state.playhead);})():Math.max(0,state.playhead);
+  let offset=0, count=0;
+  for(const raw of lines){
+    var text=String(raw).replace(/[\r\n]/g,'').trim();
+    if(!text) continue;
+    var clip={id:uid(),mediaId:null,kind:'text',start:start0+offset,dur:3,srcDur:3,trimStart:0,trimEnd:0,speed:1,volume:1,filter:'none',fit:'cover',x:0,y:0,scale:1,rotate:0,speedCurve:[],text,textStyle:{font:'700 48px Arial',color:'#ffffff',align:'center',bg:'rgba(0,0,0,0.45)',stroke:'#000000',strokeW:3,padding:10,shadow:6},anim:'none',animDur:0.3,opacity:1,_sub:true,_subSeq:++_subSeq};
+    track.clips.push(clip);
+    offset+=3; count++;
+  }
+  renderTimeline(); toast('Imported '+count+' subtitles');
+}
+function parseSRTTime(s){
+  var m=/(\d+):(\d+):(\d+)[.,](\d+)/.exec(s);
+  if(!m) return 0;
+  return ((+m[1]||0)*3600)+((+m[2]||0)*60)+(+m[3]||0)+((+m[4]).padEnd(3,'0').slice(0,3)/1000);
+}
+function parseSubtitleText(input){
+  var text=String(input);
+  if(text.indexOf('WEBVTT')===0){
+    var body=text.replace('WEBVTT','').split('\n\n')[1]||'';
+    body=body.trim();
+    var chunks=body.split(/\n\s*\n/);
+    var out=[];
+    for(var c=0;c<chunks.length;c++){
+      var chunk=chunks[c].trim();
+      if(!chunk) continue;
+      var lines=chunk.split('\n');
+      var tLineId=-1;
+      for(var j=0;j<lines.length;j++){ if(lines[j].indexOf('--')>=0){ tLineId=j; break; } }
+      if(tLineId<0 && lines.length){ out.push({text:lines.join(' '),dur:3}); continue; }
+      var from=parseSRTTime(lines[tLineId].split('-->')[0]);
+      var to=parseSRTTime(lines[tLineId].split('-->')[1]);
+      var dur=to>from?Math.max(0.4,Math.min(to-from,5)):3;
+      var content=lines.splice(tLineId,1).join(' ').trim();
+      if(content) out.push({text:content,dur});
+    }
+    return out.length?out:[text.replace('WEBVTT','').trim()].filter(Boolean).map(function(x){return {text:x,dur:3};});
+  }
+  var blocks=text.split(/\n\s*\n/);
+  var out=[];
+  for(var i=0;i<blocks.length;i++){
+    var block=blocks[i].trim();
+    if(!block) continue;
+    var bLines=block.split('\n');
+    var tLineId=-1;
+    for(var j=0;j<bLines.length;j++){ if(bLines[j].indexOf('--')>=0){ tLineId=j; break; } }
+    if(tLineId>=0){
+      var from=parseSRTTime(bLines[tLineId].split('-->')[0]);
+      var to=parseSRTTime(bLines[tLineId].split('-->')[1]);
+      var dur=to>from?Math.max(0.4,Math.min(to-from,5)):3;
+      var content=bLines.splice(tLineId,1).join(' ').trim();
+      if(content) out.push({text:content,dur});
+    } else {
+      if(block) out.push({text:block,dur:3});
+    }
+  }
+  return out.length?out:[text].filter(Boolean).map(function(x){return {text:x,dur:3};});
+}
+function addSubtitleFromText(input){
+  var parsed=parseSubtitleText(input);
+  if(!parsed.length){toast('No subtitles found');return;}
+  addSubtitleLines(parsed.map(function(p){ return p.dur?p.text+'\t'+p.dur:p.text; }));
+}
+function exportSRT(){
+  var track=state.tracks.find(t=>t.kind==='text');
+  var clips=(track?track.clips:[]).filter(c=>c.text&&c.text.trim()).sort(function(a,b){return a.start-b.start;});
+  var lines=[];
+  for(var i=0;i<clips.length;i++){
+    var c=clips[i];
+    var from=fmtSRT(c.start);
+    var to=fmtSRT(c.start+effDur(c));
+    lines.push((i+1)+'\n'+from+' --> '+to+'\n'+String(c.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'\n');
+  }
+  var blob=new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(state.projectName||'capcut-pro')+'.srt';a.click();
+  toast('Exported SRT');
+}
+function fmtSRT(t){
+  var h=Math.floor(t/3600);
+  var m=Math.floor((t%3600)/60);
+  var s=Math.floor(t%60);
+  var ms=Math.round((t-Math.floor(t))*1000);
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+','+String(ms).padStart(3,'0');
+}
+
 /* ---------- TEXT-TO-SPEECH VOICEOVER (offline meSpeak, exportable) ---------- */
 // meSpeak is loaded from vendor/mespeak.js (bundled, ~5.5MB, includes English voice).
 // It returns a BASE64 WAV via rawdata:'base64' — that audio can be mixed into the export.
@@ -489,6 +582,17 @@ function wavDurationSec(wavB64){
   }catch(e){ return 3; }
 }
 document.getElementById('btnAddTTS').onclick=()=>addTTSClip();
+const srtInput=document.getElementById('fileInputSRT');
+document.getElementById('btnImportSRT').onclick=()=>srtInput.click();
+srtInput.onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader(); r.onload=()=>{addSubtitleFromText(r.result); srtInput.value='';}; r.readAsText(f);
+};
+document.getElementById('btnSub').onclick=()=>{
+  const txt=prompt('Subtitle text — one line = one subtitle, separate with newline','Subtitle 1\nSubtitle 2');
+  if(txt!==null) addSubtitleFromText(txt);
+};
+document.getElementById('btnExportSRT').onclick=exportSRT;
 function addTTSClip(){
   const track=state.tracks.find(t=>t.kind==='tts');
   initTTS();
@@ -1074,6 +1178,22 @@ function drawFitTo(CT,img,nw,nh,W,H,fit){
   else {const r=Math.max(W/nw,H/nh);const w=nw*r,h=nh*r;CT.drawImage(img,(W-w)/2,(H-h)/2,w,h);}
 }
 function drawTextTo(g,c,localT){
+  if(c._sub){
+    var tg=c.textStyle||{font:'700 48px Arial',color:'#ffffff',align:'center',stroke:'#000000',strokeW:3,padding:10,shadow:6};
+    var text=String(c.text||'');
+    var subFS=parseInt(tg.font.match(/(\d+)px/)[1],10)||48; var subLH=subFS*1.2;
+    var pad=(typeof tg.padding==='number'?tg.padding:10); var subRows=text.split('\n'); var block=subRows.length*subLH;
+    var bottomY=(g.H-pad)-2; var topY=bottomY-block;
+    g.ctx.save(); g.ctx.globalAlpha=1; g.ctx.font=tg.font; g.ctx.textAlign=tg.align||'center'; g.ctx.textBaseline='alphabetic';
+    var cx=g.W/2;
+    var entry=Math.min(1,localT/0.25); g.ctx.translate(0,(1-entry)*(g.H-bottomY));
+    var maxW=0; for(var k=0;k<subRows.length;k++){var w=g.ctx.measureText(subRows[k]).width; if(w>maxW) maxW=w;}
+    var pw=maxW+pad*2; var ph=block+pad*1.5; var px=cx-pw/2; var py=topY-pad/2;
+    g.ctx.fillStyle='rgba(0,0,0,0.55)'; g.ctx.beginPath(); g.ctx.roundRect(px,py,pw,ph,8); g.ctx.fill();
+    g.ctx.fillStyle=tg.color; g.ctx.strokeStyle=tg.stroke; g.ctx.lineWidth=tg.strokeW||0;
+    for(var k=0;k<subRows.length;k++){ g.ctx.strokeText(subRows[k],cx,topY+k*subLH); g.ctx.fillText(subRows[k],cx,topY+k*subLH); }
+    g.ctx.restore(); return;
+  }
   const st=c.textStyle; if(!st) return;
   const CT=g.ctx; let alpha=1, scale=1, xoff=0;
   const an=Animations[c.anim];
@@ -1082,7 +1202,7 @@ function drawTextTo(g,c,localT){
   applyKeyframes(CT,c,localT);
   CT.globalAlpha=alpha;
   CT.font=st.font; CT.textAlign=st.align||'center'; CT.textBaseline='middle';
-  const lines=String(c.text).split('\n'); const fs=parseInt(st.font.match(/(\d+)px/)[1])||48; const lh=fs*1.15;
+  const lines=String(c.text).split('\n'); const fnt=parseInt(st.font.match(/(\d+)px/)[1])||48; const lh=fnt*1.15;
   CT.translate(g.W/2+xoff+(c.x||0),g.H/2+(c.y||0)); CT.scale(scale,scale);
   let y=-(lines.length-1)*lh/2;
   // wordByWord: fade each word sequentially
@@ -1157,7 +1277,7 @@ function renderProps(){
   if(!state.sel){propsBody.innerHTML='<div class="empty-hint">Select a clip on the timeline to edit it, or add media from the left.</div>';document.getElementById('propsTitle').textContent='Properties';return;}
   const fc=findClip(state.sel.clipId); if(!fc){propsBody.innerHTML='';return;}
   const c=fc.clip;
-  document.getElementById('propsTitle').textContent=c.kind==='text'?'Text settings':'Clip settings';
+  document.getElementById('propsTitle').textContent=c._sub?'Subtitle':(c.kind==='text'?'Text settings':'Clip settings');
   let h='';
   h+='<div class="row"><span class="time">Start '+fmt(c.start)+'</span><span class="spacer"></span><span class="time">Len '+fmt(effDur(c))+'</span></div>';
   // transform (video/image/text)
