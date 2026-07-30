@@ -85,9 +85,12 @@
   .tl-body{flex:1;overflow:auto;position:relative;}
   .tl-tracks{position:relative;}
   .track{display:flex;height:46px;border-bottom:1px solid var(--line);}
-  .track-label{width:74px;flex:none;background:var(--panel2);border-right:1px solid var(--line);
-    display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--muted);position:sticky;left:0;z-index:3;}
+  .track-label{width:90px;flex:none;background:var(--panel2);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;column-gap:6px;
+    padding:2px;font-size:10px;color:var(--muted);position:sticky;left:0;z-index:3;}
   .track-label .ttl{font-size:11px;color:var(--txt);font-weight:600;}
+  .track-label .mute-b{font-size:9px;border:none;background:transparent;color:var(--muted);cursor:pointer;border-radius:3px;padding:1px 4px;}
+  .track-label .mute-b.on{color:#ff4444;}
   .track-lane{flex:1;position:relative;background:
     repeating-linear-gradient(90deg,#12141a,#12141a 9px,#15171f 9px,#15171f 10px);}
   .clip{position:absolute;top:3px;height:40px;border-radius:7px;padding:4px 6px;overflow:hidden;cursor:grab;
@@ -352,7 +355,7 @@ function ensureTracks(){
   const needed=['video','image','text','audio','tts'];
   for(const k of needed){
     if(!state.tracks.find(t=>t.kind===k)){
-      state.tracks.push({id:uid(),kind:k,name:{video:'Video',image:'Image',text:'Text',audio:'Audio',tts:'Voice'}[k],clips:[]});
+      state.tracks.push({id:uid(),kind:k,name:{video:'Video',image:'Image',text:'Text',audio:'Audio',tts:'Voice'}[k],clips:[],muted:false});
     }
   }
 }
@@ -649,7 +652,7 @@ function tickTTS(t){
             const g=audioCtxMix.createGain(); g.gain.value=state.muted?0:(c.volume??1);
             src.connect(g); g.connect(audioCtxMix.destination);
             src.start(audioCtxMix.currentTime, (t-c.start)*c.speed);
-            ttsLive[c.id]={src,started:true};
+            ttsLive[c.id]={src,gain:tr.muted?0:(c.volume??1),started:true};
           }catch(e){}
         }
       }
@@ -691,8 +694,24 @@ function renderTimeline(){
   for(const t of state.tracks){
     const row=document.createElement('div');row.className='track';
     const lab=document.createElement('div');lab.className='track-label';
-    lab.innerHTML='<span class="ttl">'+t.name+'</span><span>'+t.kind+'</span>';
-    const lane=document.createElement('div');lane.className='track-lane';lane.style.width=W+'px';
+    lab.innerHTML='<span class="ttl">'+t.name+'</span><button class="mute-b'+(t.muted?' on':'')+'">'+(t.muted?'🔇':'🔊')+'</button>';
+    function refreshMute(){
+  for(const tr of state.tracks){
+    const muted=!!tr.muted;
+    if(tr.kind==='audio'){const mg=getMusicGainNode(); if(mg) mg.gain.value=(state.muted||muted)?0:1;}
+    if(!state.playing){
+      for(const c of tr.clips){
+        if((c.kind==='audio'||c.kind==='video')){
+          const m=mediaById(c.mediaId); if(!m) continue;
+          getMediaEl(m).muted = state.muted || muted;
+        }
+      }
+    }
+  }
+}
+
+lab.querySelector('.mute-b').onclick=()=>{t.muted=!t.muted;renderTimeline();refreshMute();};
+    const lane=document.createElement('div');
     for(const c of t.clips){
       lane.appendChild(buildClipEl(t,c));
     }
