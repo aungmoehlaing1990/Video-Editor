@@ -221,6 +221,7 @@
       <button class="ghost" id="btnSplit">Split ✂</button>
       <button class="ghost" id="btnDel">Delete</button>
       <button class="ghost" id="btnCopy">Duplicate</button>
+      <button class="ghost" id="btnTrans">Transition</button>
       <div class="spacer"></div>
       <span class="time" id="tlInfo"></span>
     </div>
@@ -407,7 +408,8 @@ function addMediaClip(mediaId){
   const clip={id:uid(),mediaId:mediaId,kind:m.kind==='audio'?'audio':(m.kind==='image'?'image':'video'),
     start:freeStart(track),dur,srcDur:m.dur||dur,trimStart:0,trimEnd:0,speed:1,
     volume:1,filter:'none',fit:'cover',x:0,y:0,scale:1,rotate:0,
-    text:'',textStyle:null,anim:'none',animDur:0.4,opacity:1};
+    text:'',textStyle:null,anim:'none',animDur:0.4,opacity:1,
+    transition:'none',transitionDur:0.5, pip:false, reverse:false, freeze:false, colorGrade:null};
   track.clips.push(clip);
   selectClip(track.id,clip.id);
   renderTimeline();
@@ -575,6 +577,9 @@ function base64WavToAudioBuffer(ac,wavB64){
   } else return null;
   return buf;
 }
+const Transitions={fade:{name:'Fade'},wipeLeft:{name:'Wipe Left'},wipeRight:{name:'Wipe Right'},dissolve:{name:'Dissolve'}};
+function getTransition(c){ if(!c) return null; return Transitions[c.transition]||null; }
+
 function wavDurationSec(wavB64){
   try{
     const bin=atob(wavB64); const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
@@ -856,7 +861,28 @@ rulerEl.addEventListener('touchmove',()=>{if(longPressTimer){clearTimeout(longPr
 document.getElementById('seek').addEventListener('input',e=>{
   setPlayhead((e.target.value/1000)*totalDuration());
 });
-function splitAtClip(clip){
+function reverseSelected(){
+    const fc=findClip(state.sel&&state.sel.clipId); if(!fc){toast('Select one clip');return;} const c=fc.clip;
+    if(c.kind!=='video'&&c.kind!=='audio') return;
+    c.reverse=!c.reverse;
+    if(c.reverse){ c.trimStart=c.srcDur - effDur(c) - c.trimStart; } else { c.trimStart=0; }
+    renderTimeline(); toast(c.reverse?'Reversed':'Normal');
+  }
+  function freezeSelected(){
+    const fc=findClip(state.sel&&state.sel.clipId); if(!fc){toast('Select one clip');return;} const c=fc.clip;
+    if(c.kind!=='video'&&c.kind!=='audio') return;
+    const t=state.playhead||0;
+    const out={...c, id:uid(), start: Math.max(c.start, Math.min(t, c.start+effDur(c)-0.1)), dur:1, trimStart:0, trimEnd:0, srcDur:1, speed:1, speedCurve:[], reverse:false, freeze:true};
+    fc.track.clips.push(out);
+    renderTimeline(); toast('Frozen 1s at playhead');
+  }
+  function addTransition(track, clip){
+    if(clip.kind!=='video'&&clip.kind!=='image') return;
+    const tr={id:uid(),mediaId:clip.mediaId,kind:'transition',start:clip.start+effDur(clip)-0.5,dur:0.5,srcDur:0.5,trimStart:0,trimEnd:0,speed:1,volume:1,filter:clip.filter||'none',fit:clip.fit||'cover',x:0,y:0,scale:1,rotate:0,speedCurve:[],text:'',textStyle:null,anim:'none',animDur:0,opacity:1,transition:'fade',transitionDur:0.5};
+    track.clips.push(tr);
+    renderTimeline(); toast('Transition added');
+  }
+  function splitAtClip(clip){
   const track=state.tracks.find(t=>t.id===state.sel.trackId);
   const t=state.playhead;
   if(t<=clip.start+0.05||t>=clip.start+effDur(clip)-0.05){toast('Move playhead inside clip to split');return;}
@@ -1354,6 +1380,11 @@ function renderProps(){
   h+='<label>Opacity ('+Math.round((c.opacity??1)*100)+'%)</label><input type="range" id="kfOpacity" min="0" max="100" value="'+(Math.round((c.opacity??1)*100))+'">';
   h+='<label>Rotate ('+(c.rotate||0)+'°)</label><input type="range" id="kfRotate" min="-180" max="180" value="'+(c.rotate||0)+'">';
   h+='<label>Blend</label><select id="blendMode"><option value="source-over">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="darken">Darken</option><option value="lighten">Lighten</option><option value="color-dodge">Color Dodge</option><option value="color-burn">Color Burn</option><option value="soft-light">Soft Light</option><option value="hard-light">Hard Light</option><option value="difference">Difference</option><option value="exclusion">Exclusion</option><option value="hue">Hue</option><option value="saturation">Saturation</option><option value="luminosity">Luminosity</option></select>';
+  h+='<label>Brightness</label><input type="range" id="cgBrightness" min="0" max="300" value="'+(c.colorGrade?.brightness??100)+'">';
+  h+='<label>Contrast</label><input type="range" id="cgContrast" min="0" max="300" value="'+(c.colorGrade?.contrast??100)+'">';
+  h+='<label>Saturation</label><input type="range" id="cgSaturation" min="0" max="300" value="'+(c.colorGrade?.saturation??100)+'">';
+  h+='<label class="row"><input type="checkbox" id="chPip" style="width:auto" '+(c.pip?'checked':'')+'> <span>Picture in picture</span></label>';
+  h+='<div class="row" style="gap:4px"><button class="ghost" id="btnReverse" style="flex:1">Reverse</button><button class="ghost" id="btnFreeze" style="flex:1">Freeze 1s</button></div>';
   h+='<label>Crossfade (s)</label><input type="range" id="crossfade" min="0" max="200" value="'+Math.round((c.crossfade||0)*100)+'">';
   h+='<label>Speed</label><input type="range" id="speed" min="25" max="400" value="'+(c.speed*100)+'">';
   h+='<label>Speed keyframes</label><div class="row" style="gap:4px"><button class="ghost" id="kfSpeedAdd" style="flex:1">+ Add speed key</button><span class="time" id="speedKfStatus"></span></div>';
@@ -1387,7 +1418,12 @@ function renderProps(){
     const st=document.getElementById('speedKfStatus');if(st)st.textContent=pairs.length+' keys';
   });
   bind('blendMode',e=>{c.blendMode=e.target.value;});
-  bind('crossfade',e=>{c.crossfade=+e.target.value/100;});
+  bind('cgBrightness',e=>{c.colorGrade=c.colorGrade||{};c.colorGrade.brightness=+e.target.value;});
+  bind('cgContrast',e=>{c.colorGrade=c.colorGrade||{};c.colorGrade.contrast=+e.target.value;});
+  bind('cgSaturation',e=>{c.colorGrade=c.colorGrade||{};c.colorGrade.saturation=+e.target.value;});
+  bind('chPip',e=>{c.pip=e.target.checked;});
+  const rBtn=propsBody.querySelector('#btnReverse'); if(rBtn) rBtn.onclick=()=>reverseSelected();
+  const fBtn=propsBody.querySelector('#btnFreeze'); if(fBtn) fBtn.onclick=()=>freezeSelected();
   bind('kfScale',e=>{
     const v=+e.target.value/100; const prop=renderProps._kfProp||'scale';
     c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
@@ -1514,6 +1550,7 @@ document.getElementById('btnDel').onclick=()=>{
   fc.track.clips=fc.track.clips.filter(x=>x.id!==fc.clip.id);
   deselect();renderTimeline();
 };
+document.getElementById('btnTrans').onclick=()=>{ const fc=findClip(state.sel&&state.sel.clipId); if(!fc){toast('Select a clip');return;} addTransition(fc.track, fc.clip); };
 document.getElementById('btnCopy').onclick=()=>{
   if(!state.sel) return;
   const fc=findClip(state.sel.clipId); if(!fc) return;
