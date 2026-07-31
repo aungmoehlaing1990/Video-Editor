@@ -102,7 +102,8 @@
   .clip.audio{background:linear-gradient(180deg,#e8590c,#a8400a);}
   .clip .ct{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .clip .cs{opacity:.7;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .clip .chandle{position:absolute;top:0;height:100%;width:7px;background:rgba(255,255,255,.25);cursor:ew-resize;}
+  .clip .chandle{position:absolute;top:0;height:100%;width:10px;background:rgba(255,255,255,.18);cursor:ew-resize;transition:background .12s;}
+  .clip:hover .chandle{background:rgba(255,255,255,.55);}
   .clip .chandle.l{left:0;border-radius:7px 0 0 7px;}
   .clip .chandle.r{right:0;border-radius:0 7px 7px 0;}
   .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--accent);z-index:6;pointer-events:none;left:74px;}
@@ -921,6 +922,14 @@ function getMusicGainNode(){
   }
   return globalMusicGain;
 }
+let globalNoiseGate=null;
+function getNoiseGate(){
+  if(!globalNoiseGate && audioCtxMix){
+    globalNoiseGate=audioCtxMix.createGain();
+    globalNoiseGate.gain.value=1;
+  }
+  return globalNoiseGate;
+}
 function applyAudioDucking(t){
   if(state.muted||!audioCtxMix) return;
   let hasVoice=false;
@@ -1130,9 +1139,13 @@ function applyKeyframes(ctx,c,localT){
   }
   const rv=kfVal(c.keyframes,'rotate',localT);
   if(rv!==undefined) ctx.rotate(rv*Math.PI/180);
-  const kx=kfVal(c.keyframes,'x',localT);
-  const ky=kfVal(c.keyframes,'y',localT);
-  if(kx!==undefined || ky!==undefined) ctx.translate(kx||0,ky||0);
+  let kxf=kfVal(c.keyframes,'x',localT), kyf=kfVal(c.keyframes,'y',localT);
+  if(kxf!==undefined) c.x=kxf; if(kyf!==undefined) c.y=kyf;
+  const ms=kfVal(c.keyframes,'maskShape',localT);
+  if(ms){
+    if(!c.mask) c.mask={type:'rect',w:60,h:60,feather:10,on:false};
+    if(ms.type) c.mask.type=ms.type; if(ms.w!=null) c.mask.w=ms.w; if(ms.h!=null) c.mask.h=ms.h; if(ms.feather!=null) c.mask.feather=ms.feather;
+  }
 }
 // Shared draw core — used by BOTH live preview and export (so chroma key, filters,
 const easeInOut=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
@@ -1221,6 +1234,73 @@ function applyMask(ctx, c, W, H){
   }
   ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
+}
+
+function createReverseUrl(url){
+  return new Promise((resolve,reject)=>{
+    const vid=document.createElement('video'); vid.src=url; vid.muted=true; vid.crossOrigin='anonymous';
+    vid.oncanplay=async()=>{
+      try{
+        const stream=vid.captureStream();
+        const rec=new MediaRecorder(stream, {mimeType:'video/webm;codecs=vp8'});
+        const ch=[]; rec.ondataavailable=e=>ch.push(e.data);
+        rec.start();
+        vid.currentTime=vid.duration; vid.playbackRate=-1;
+        await new Promise(r=>{ vid.onseeked=r; });
+        await new Promise(r=>setTimeout(r,300));
+        rec.stop();
+        await new Promise(r=>{ rec.onstop=r; });
+        const blob=new Blob(ch,{type:'video/webm'});
+        vid.pause(); vid.playbackRate=1;
+        resolve(URL.createObjectURL(blob));
+      }catch(e){ reject(e); }
+    };
+    vid.onerror=reject;
+  });
+}
+function ensureReverseClip(c){
+  if(!c.reverse || c.revUrl) return;
+  const m=mediaById(c.mediaId); if(!m) return;
+  if(!m.revUrls) m.revUrls={};
+  if(!m.revUrls[c.id]){
+    createReverseUrl(m.url).then(url=>{ m.revUrls[c.id]=url; renderFrame(state.playhead); }).catch(()=>{});
+  }
+}
+
+function parseCubeLUT(text){
+  try{
+    const lines=String(text).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    const size=parseInt(lines.find(l=>l.startsWith('LUT_3D_SIZE'))?.split('\s+')[1]||'0',10);
+    if(size<2||size>64) return null;
+    const data=[];
+    for(const line of lines){
+      const nums=line.split(/\s+/).map(Number).filter(n=>!isNaN(n));
+      if(nums.length>=3) data.push({r:nums[0]/255,g:nums[1]/255,b:nums[2]/255});
+    }
+    if(data.length<size*size*size) return null;
+    function interp(t, a,b){ return a+(b-a)*t; }
+    const lookup=(r,g,b)=>{
+      const rF=r*(size-1), gF=g*(size-1), bF=b*(size-1);
+      const r0=Math.floor(rF), g0=Math.floor(gF), b0=Math.floor(bF);
+      const r1=Math.min(r0+1,size-1), g1=Math.min(g0+1,size-1), b1=Math.min(b0+1,size-1);
+      const rf=rF-r0, gf=gF-g0, bf=bF-b0;
+      const idx=(r0,g0,b0)=>((r0*size+g0)*size+b0);
+      function sample(ri,gi,bi){ const s=data[idx(ri,gi,bi)]; return s?{r:s.r,g:s.g,b:s.b}:{r,g,b}; }
+      const c000=sample(r0,g0,b0),c100=sample(r1,g0,b0),c010=sample(r0,g1,b0),c110=sample(r1,g1,b0),c001=sample(r0,g0,b1),c101=sample(r1,g0,b1),c011=sample(r0,g1,b1),c111=sample(r1,g1,b1);
+      const lerp=(a,b,t)=>interp(t,a,b);
+      const c00=lerp(c000,c100,rf), c10=lerp(c010,c110,rf), c01=lerp(c001,c101,rf), c11=lerp(c011,c111,rf);
+      const c0=lerp(c00,c10,gf), c1=lerp(c01,c11,gf);
+      return {r:lerp(c0,c1,bf), g:lerp(c0.g,c1.g,bf), b:lerp(c0.b,c1.b,bf)};
+    };
+    return lookup;
+  }catch(e){ return null; }
+}
+
+function bakeLUT(lookup,r,g,b){
+  try{
+    const o=lookup(r/255,g/255,b/255);
+    return "rgb("+Math.round((o.r||0)*255)+","+Math.round((o.g||0)*255)+","+Math.round((o.b||0)*255)+")";
+  }catch(e){ return "rgb("+r+","+g+","+b+")"; }
 }
 const chromaBuf=document.createElement('canvas');
 function drawChroma(g,imgEl,nw,nh,c,f){
@@ -1430,6 +1510,7 @@ function renderProps(){
   h+='<label class="row"><input type="checkbox" id="maskOn" style="width:auto" '+(c.mask&&c.mask.on?'checked':'')+'> <span>Enable mask</span></label>';
   h+='<div class="subhead">Stabilization</div>';
   h+='<label class="row"><input type="checkbox" id="stabilizeOn" style="width:auto" '+(c.stabilize?'checked':'')+'> <span>Stabilize</span></label>';
+  h+='<label>Smoothing</label><input type="range" id="smoothOn" min="0" max="100" value="'+(c.smooth!=null?c.smooth:50)+'">';
   h+='<div class="subhead">Presets</div>';
   h+='<div class="row" style="gap:4px">'+Templates.map(t=>'<button class="ghost" data-preset="'+t.name+'">'+t.name+'</button>').join('')+'</div>';
   h+='<div class="subhead">Speed curve</div>';
@@ -1503,13 +1584,26 @@ function renderProps(){
     const bC=document.getElementById('curveContrast'); if(bC) bC.onclick=()=>setActive('contrast');
     const bS=document.getElementById('curveSaturation'); if(bS) bS.onclick=()=>setActive('saturation');
     const bClr=document.getElementById('curveClear'); if(bClr) bClr.onclick=()=>{ c.colorCurve[curveActive]=[]; perFrameFromCurves(c); renderProps(); };
+  const lutBtn=propsBody.querySelector('#lutImport'); if(lutBtn) lutBtn.onclick=()=>{
+    const inp=document.createElement('input'); inp.type='file'; inp.accept='.cube,.txt';
+    inp.onchange=async()=>{
+      const file=inp.files[0]; if(!file) return;
+      const text=await file.text();
+      const lut=parseCubeLUT(text);
+      if(!lut){ toast('Invalid .cube LUT'); return; }
+      c.lut=lut; toast('LUT imported'); renderProps(); renderTimeline();
+    };
+    inp.click();
+  };
   }
   bind('chPip',e=>{c.pip=e.target.checked;});
+  bind('compositeMode',e=>{c.compositeMode=e.target.value;});
   const rBtn=propsBody.querySelector('#btnReverse'); if(rBtn) rBtn.onclick=()=>reverseSelected();
   const fBtn=propsBody.querySelector('#btnFreeze'); if(fBtn) fBtn.onclick=()=>freezeSelected();
   {
     bind('transSel',e=>{c.transition=e.target.value});
     bind('transDur',e=>{c.transitionDur=+e.target.value/100});
+    const tcSeg=propsBody.querySelector('#transCurveSeg'); if(tcSeg) tcSeg.querySelectorAll('button').forEach(b=>b.onclick=e=>{ c.transCurve=e.target.dataset.v; renderProps(); });
     const mSeg=propsBody.querySelector('#maskTypeSeg'); if(mSeg) mSeg.querySelectorAll('button').forEach(b=>b.onclick=e=>{ c.mask.type=e.target.dataset.v; renderProps(); });
   (propsBody.querySelectorAll('[data-preset]')||[]).forEach(b=>b.onclick=e=>applyPreset(e.target.dataset.preset));
     const cv=document.getElementById('speedCurveCanvas'); if(cv){
@@ -1550,7 +1644,8 @@ function renderProps(){
     bind('maskW',e=>{ c.mask.w=+e.target.value; renderTimeline(); });
     bind('maskH',e=>{ c.mask.h=+e.target.value; renderTimeline(); });
     bind('maskFeather',e=>{ c.mask.feather=+e.target.value; });
-    bind('stabilizeOn',e=>{ c.stabilize=e.target.checked; toast(c.stabilize?'Stabilization on':'Stabilization off'); });
+    bind('stabilizeOn',e=>{ c.stabilize=e.target.checked; });
+  bind('smoothOn',e=>{ c.smooth=+e.target.value; });
     const mSeg=propsBody.querySelector('#maskTypeSeg'); if(mSeg) mSeg.querySelectorAll('button').forEach(b=>b.onclick=e=>{ c.mask.type=e.target.dataset.v; renderProps(); });
     const cv=document.getElementById('speedCurveCanvas'); if(cv){
       const ctx2=cv.getContext('2d'); let dragging=false;
@@ -1582,6 +1677,12 @@ function renderProps(){
     }
     const kfClear=propsBody.querySelector('#kfSpeedClear'); if(kfClear) kfClear.onclick=()=>{ c.speedCurve=(c.speedCurve||[]); c.speedCurve.length=0; renderProps(); };
   }
+    if((c.kind==='audio'||c.kind==='video')){
+      h+='<div class="subhead">Audio cleanup</div>';
+      h+='<label>Noise gate threshold</label><input type="range" id="ngThr" min="0" max="100" value="'+(c.noiseGateThreshold??30)+'">';
+      h+='<label>Gate reduction (dB)</label><input type="range" id="ngRed" min="0" max="60" value="'+(c.noiseGateReduction??20)+'">';
+      h+='<label class="row"><input type="checkbox" id="ngOn" style="width:auto" '+(c.noiseGate?'checked':'')+'> <span>Enable noise gate</span></label>';
+    }
   bind('kfScale',e=>{
     const v=+e.target.value/100; const prop=renderProps._kfProp||'scale';
     c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
