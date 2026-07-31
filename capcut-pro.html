@@ -409,7 +409,7 @@ function addMediaClip(mediaId){
     start:freeStart(track),dur,srcDur:m.dur||dur,trimStart:0,trimEnd:0,speed:1,
     volume:1,filter:'none',fit:'cover',x:0,y:0,scale:1,rotate:0,
     text:'',textStyle:null,anim:'none',animDur:0.4,opacity:1,
-    transition:'none',transitionDur:0.5, pip:false, reverse:false, freeze:false, colorGrade:null};
+    transition:'none',transitionDur:0.5, pip:false, reverse:false, freeze:false, colorGrade:null, mask:null, stabilize:false};
   track.clips.push(clip);
   selectClip(track.id,clip.id);
   renderTimeline();
@@ -1176,14 +1176,43 @@ function drawClipTo(c, localT, g){
       const sVal=sf!==undefined?sf:100;
       dynamicFilter=f+' brightness('+bVal+'%) contrast('+cVal+'%) saturate('+sVal+'%)';
     }
+    if(c.colorGrade){
+      const b=(c.colorGrade.brightness!=null?c.colorGrade.brightness:100);
+      const cn=(c.colorGrade.contrast!=null?c.colorGrade.contrast:100);
+      const s=(c.colorGrade.saturation!=null?c.colorGrade.saturation:100);
+      dynamicFilter=(dynamicFilter||'')+' brightness('+b+'%) contrast('+cn+'%) saturate('+s+'%)';
+    }
     if(dynamicFilter) CT.filter=dynamicFilter;
     CT.globalAlpha=c.opacity??1;
-    CT.translate(g.W/2,g.H/2); CT.translate(c.x,c.y); CT.rotate((c.rotate||0)*Math.PI/180); CT.scale(c.scale,c.scale); CT.translate(-g.W/2,-g.H/2);
+    CT.translate(g.W/2,g.H/2);
+    if(c.pip){ CT.translate(g.W*0.25,-g.H*0.18); CT.scale(0.35,0.35); }
+    CT.translate(c.x,c.y); CT.rotate((c.rotate||0)*Math.PI/180); CT.scale(c.scale,c.scale); CT.translate(-g.W/2,-g.H/2);
     drawFitTo(CT,imgEl,nw,nh,g.W,g.H,c.fit);
+    applyMask(CT,c,g.W,g.H);
     CT.restore();
   } else if(c.kind==='text'){
     drawTextTo(g,c,localT);
   }
+}
+
+function applyMask(ctx, c, W, H){
+  if(!c.mask || !c.mask.on) return;
+  const m = c.mask;
+  const cx = (c.x||0) + W/2, cy = (c.y||0) + H/2;
+  const w = (m.w||60) * (W/100);
+  const h = (m.h||60) * (H/100);
+  const r = Math.min(w,h)/2;
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.beginPath();
+  if(m.type==='circle'){
+    ctx.arc(cx,cy,Math.max(1,r),0,Math.PI*2);
+  } else if(m.type==='ellipse'){
+    ctx.ellipse(cx,cy,Math.max(1,w/2),Math.max(1,h/2),0,0,Math.PI*2);
+  } else {
+    ctx.rect(cx - w/2, cy - h/2, w, h);
+  }
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
 }
 const chromaBuf=document.createElement('canvas');
 function drawChroma(g,imgEl,nw,nh,c,f){
@@ -1385,9 +1414,17 @@ function renderProps(){
   h+='<label>Saturation</label><input type="range" id="cgSaturation" min="0" max="300" value="'+(c.colorGrade?.saturation??100)+'">';
   h+='<label class="row"><input type="checkbox" id="chPip" style="width:auto" '+(c.pip?'checked':'')+'> <span>Picture in picture</span></label>';
   h+='<div class="row" style="gap:4px"><button class="ghost" id="btnReverse" style="flex:1">Reverse</button><button class="ghost" id="btnFreeze" style="flex:1">Freeze 1s</button></div>';
-  h+='<label>Crossfade (s)</label><input type="range" id="crossfade" min="0" max="200" value="'+Math.round((c.crossfade||0)*100)+'">';
-  h+='<label>Speed</label><input type="range" id="speed" min="25" max="400" value="'+(c.speed*100)+'">';
-  h+='<label>Speed keyframes</label><div class="row" style="gap:4px"><button class="ghost" id="kfSpeedAdd" style="flex:1">+ Add speed key</button><span class="time" id="speedKfStatus"></span></div>';
+  h+='<div class="subhead">Mask / shape</div>';
+  h+='<label>Shape</label><div class="seg" id="maskTypeSeg"><button data-v="rect" class="'+(c.mask&&c.mask.type==='rect'?'on':'')+'">Rect</button><button data-v="circle" class="'+(c.mask&&c.mask.type==='circle'?'on':'')+'">Circle</button><button data-v="ellipse" class="'+(c.mask&&c.mask.type==='ellipse'?'on':'')+'">Ellipse</button></div>';
+  h+='<label>Width</label><input type="range" id="maskW" min="10" max="100" value="'+(c.mask?c.mask.w:60)+'">';
+  h+='<label>Height</label><input type="range" id="maskH" min="10" max="100" value="'+(c.mask?c.mask.h:60)+'">';
+  h+='<label>Feather</label><input type="range" id="maskFeather" min="0" max="60" value="'+(c.mask?c.mask.feather:10)+'">';
+  h+='<label class="row"><input type="checkbox" id="maskOn" style="width:auto" '+(c.mask&&c.mask.on?'checked':'')+'> <span>Enable mask</span></label>';
+  h+='<div class="subhead">Stabilization</div>';
+  h+='<label class="row"><input type="checkbox" id="stabilizeOn" style="width:auto" '+(c.stabilize?'checked':'')+'> <span>Stabilize</span></label>';
+  h+='<div class="subhead">Speed curve</div>';
+  h+='<canvas id="speedCurveCanvas" width="220" height="90" style="background:#1a1d24;border-radius:6px;border:1px solid #2f3442;width:100%;height:90px"></canvas>';
+  h+='<div class="row" style="gap:4px"><button class="ghost" id="kfSpeedAdd" style="flex:1">+ Add speed key</button><button class="ghost" id="kfSpeedClear" style="flex:1">Clear</button></div>';
   h+='<label>Speed curve (t:v comma-separated)</label><input type="text" id="speedCurveText" value="'+(c.speedCurve||[]).map(p=>p.t.toFixed(1)+':'+p.v.toFixed(1)).join(', ')+'" placeholder="0:1, 3:0.5, 5:2">';
   h+='<label>Animation</label><select id="anim">'+Object.keys(Animations).map(k=>'<option value="'+k+'"'+(c.anim===k?' selected':'')+'>'+Animations[k].name+'</option>').join('')+'</select>';
   if(c.kind==='text'){
@@ -1424,6 +1461,44 @@ function renderProps(){
   bind('chPip',e=>{c.pip=e.target.checked;});
   const rBtn=propsBody.querySelector('#btnReverse'); if(rBtn) rBtn.onclick=()=>reverseSelected();
   const fBtn=propsBody.querySelector('#btnFreeze'); if(fBtn) fBtn.onclick=()=>freezeSelected();
+  {
+    if(!c.mask) c.mask={type:'rect',w:60,h:60,feather:10,on:false};
+    bind('maskOn',e=>{ c.mask.on=e.target.checked; });
+    bind('maskW',e=>{ c.mask.w=+e.target.value; renderTimeline(); });
+    bind('maskH',e=>{ c.mask.h=+e.target.value; renderTimeline(); });
+    bind('maskFeather',e=>{ c.mask.feather=+e.target.value; });
+    bind('stabilizeOn',e=>{ c.stabilize=e.target.checked; toast(c.stabilize?'Stabilization on':'Stabilization off'); });
+    const mSeg=propsBody.querySelector('#maskTypeSeg'); if(mSeg) mSeg.querySelectorAll('button').forEach(b=>b.onclick=e=>{ c.mask.type=e.target.dataset.v; renderProps(); });
+    const cv=document.getElementById('speedCurveCanvas'); if(cv){
+      const ctx2=cv.getContext('2d'); let dragging=false;
+      function drawCurve(){
+        const W=cv.width,H=cv.height; ctx2.clearRect(0,0,W,H);
+        ctx2.strokeStyle='#3b82f6'; ctx2.lineWidth=2; ctx2.beginPath();
+        const curve=(c.speedCurve||[]).slice().sort((a,b)=>a.t-b.t);
+        if(!curve.length){ ctx2.moveTo(0,H); ctx2.lineTo(W,H); ctx2.stroke(); return; }
+        const maxT=Math.max(1, curve[curve.length-1].t);
+        for(let i=0;i<curve.length;i++){
+          const x=(curve[i].t/maxT)*W, y=H-(curve[i].v/Math.max(2,curve[curve.length-1].v))*H;
+          i===0?ctx2.moveTo(x,y):ctx2.lineTo(x,y);
+        }
+        ctx2.stroke();
+      }
+      drawCurve();
+      cv.onmousedown=e=>{ dragging=true; };
+      cv.onmousemove=e=>{
+        if(!dragging) return;
+        const r=cv.getBoundingClientRect();
+        const x=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+        const maxT=Math.max(1,(c.speedCurve||[]).slice().sort((a,b)=>a.t-b.t).slice(-1)[0]?.t||1);
+        const y=Math.max(0.1,Math.min(4,(1-(e.clientY-r.top)/r.height)*(maxT)) );
+        c.speedCurve=(c.speedCurve||[]).filter(p=>Math.abs(p.t-x*maxT)>0.05);
+        c.speedCurve.push({t:x*maxT, v:y}); c.speedCurve.sort((a,b)=>a.t-b.t);
+        drawCurve();
+      };
+      window.addEventListener('mouseup',()=>{ if(dragging){dragging=false; renderProps();} });
+    }
+    const kfClear=propsBody.querySelector('#kfSpeedClear'); if(kfClear) kfClear.onclick=()=>{ c.speedCurve=(c.speedCurve||[]); c.speedCurve.length=0; renderProps(); };
+  }
   bind('kfScale',e=>{
     const v=+e.target.value/100; const prop=renderProps._kfProp||'scale';
     c.keyframes=c.keyframes||{}; c.keyframes[prop]=c.keyframes[prop]||[];
