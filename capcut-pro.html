@@ -578,6 +578,13 @@ function base64WavToAudioBuffer(ac,wavB64){
   return buf;
 }
 const Transitions={fade:{name:'Fade'},wipeLeft:{name:'Wipe Left'},wipeRight:{name:'Wipe Right'},dissolve:{name:'Dissolve'}};
+const Templates=[{"name":"Vlog basic","filter":"none","blendMode":"source-over","colorGrade":{"brightness":105,"contrast":105,"saturation":110}},{"name":"Cinematic","filter":"none","blendMode":"source-over","colorGrade":{"brightness":95,"contrast":120,"saturation":90}},{"name":"Neon pop","filter":"none","blendMode":"screen","colorGrade":{"brightness":110,"contrast":130,"saturation":160}},{"name":"Retro","filter":"none","blendMode":"overlay","colorGrade":{"brightness":100,"contrast":120,"saturation":90}},{"name":"B&W film","filter":"none","blendMode":"source-over","colorGrade":{"brightness":100,"contrast":115,"saturation":0}}];
+function applyPreset(name){
+  const t=Templates.find(x=>x.name===name);
+  if(!t||!state.sel) return;
+  const fc=findClip(state.sel.clipId); if(!fc) return;
+  const c=fc.clip; c.filter=t.filter; c.blendMode=t.blendMode; c.colorGrade={...t.colorGrade}; renderProps(); renderTimeline(); toast('Preset: '+name);
+}
 function getTransition(c){ if(!c) return null; return Transitions[c.transition]||null; }
 
 function wavDurationSec(wavB64){
@@ -807,6 +814,7 @@ function onDragUp(){
   window.removeEventListener('touchend',onDragUp);
 }
 function updateClipUI(clip){
+  perFrameFromCurves(clip);
   const el=tracksEl.querySelector('[data-clip-id="'+clip.id+'"]');
   if(!el) return;
   el.style.left=(clip.start*state.pixelsPerSec)+'px';
@@ -1422,6 +1430,8 @@ function renderProps(){
   h+='<label class="row"><input type="checkbox" id="maskOn" style="width:auto" '+(c.mask&&c.mask.on?'checked':'')+'> <span>Enable mask</span></label>';
   h+='<div class="subhead">Stabilization</div>';
   h+='<label class="row"><input type="checkbox" id="stabilizeOn" style="width:auto" '+(c.stabilize?'checked':'')+'> <span>Stabilize</span></label>';
+  h+='<div class="subhead">Presets</div>';
+  h+='<div class="row" style="gap:4px">'+Templates.map(t=>'<button class="ghost" data-preset="'+t.name+'">'+t.name+'</button>').join('')+'</div>';
   h+='<div class="subhead">Speed curve</div>';
   h+='<canvas id="speedCurveCanvas" width="220" height="90" style="background:#1a1d24;border-radius:6px;border:1px solid #2f3442;width:100%;height:90px"></canvas>';
   h+='<div class="row" style="gap:4px"><button class="ghost" id="kfSpeedAdd" style="flex:1">+ Add speed key</button><button class="ghost" id="kfSpeedClear" style="flex:1">Clear</button></div>';
@@ -1458,9 +1468,82 @@ function renderProps(){
   bind('cgBrightness',e=>{c.colorGrade=c.colorGrade||{};c.colorGrade.brightness=+e.target.value;});
   bind('cgContrast',e=>{c.colorGrade=c.colorGrade||{};c.colorGrade.contrast=+e.target.value;});
   bind('cgSaturation',e=>{c.colorGrade=c.colorGrade||{};c.colorGrade.saturation=+e.target.value;});
+  const ccv=document.getElementById('colorCurveCanvas'); if(ccv){
+    if(!c.colorCurve) c.colorCurve={brightness:[],contrast:[],saturation:[]};
+    let curveActive=(c.curveActive||'brightness');
+    let drag=false;
+    function drawCurve(){
+      const W=ccv.width,H=ccv.height, ctx3=ccv.getContext('2d');
+      ctx3.clearRect(0,0,W,H);
+      const curve=c.colorCurve[curveActive]||[];
+      ctx3.strokeStyle='#3b82f6'; ctx3.lineWidth=2; ctx3.beginPath();
+      if(!curve.length){ ctx3.moveTo(0,H); ctx3.lineTo(W,H); ctx3.stroke(); return; }
+      const maxT=Math.max(1,(curve[ curve.length-1].t||1));
+      for(let i=0;i<curve.length;i++){
+        const x=(curve[i].t/maxT)*W, y=H-(Math.min(3,Math.max(0,(curve[i].v||1))/3)*H);
+        i===0?ctx3.moveTo(x,y):ctx3.lineTo(x,y);
+      }
+      ctx3.stroke();
+    }
+    drawCurve();
+    ccv.onmousedown=e=>{ drag=true; };
+    ccv.onmousemove=e=>{
+      if(!drag) return;
+      const r=ccv.getBoundingClientRect();
+      const x=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+      const maxT=Math.max(1,(c.colorCurve[curveActive]||[]).slice().sort((a,b)=>a.t-b.t).slice(-1)[0]?.t||1);
+      const y=Math.max(0,Math.min(3,(1-(e.clientY-r.top)/r.height)*3));
+      c.colorCurve[curveActive]=(c.colorCurve[curveActive]||[]).filter(p=>Math.abs(p.t-x*maxT)>0.05);
+      c.colorCurve[curveActive].push({t:x*maxT, v:y}); c.colorCurve[curveActive].sort((a,b)=>a.t-b.t);
+      drawCurve();
+    };
+    window.addEventListener('mouseup',()=>{ if(drag){drag=false; perFrameFromCurves(c);} });
+    const setActive=(name)=>{curveActive=name;c.curveActive=name;renderProps();drawCurve();};
+    const bB=document.getElementById('curveBrightness'); if(bB) bB.onclick=()=>setActive('brightness');
+    const bC=document.getElementById('curveContrast'); if(bC) bC.onclick=()=>setActive('contrast');
+    const bS=document.getElementById('curveSaturation'); if(bS) bS.onclick=()=>setActive('saturation');
+    const bClr=document.getElementById('curveClear'); if(bClr) bClr.onclick=()=>{ c.colorCurve[curveActive]=[]; perFrameFromCurves(c); renderProps(); };
+  }
   bind('chPip',e=>{c.pip=e.target.checked;});
   const rBtn=propsBody.querySelector('#btnReverse'); if(rBtn) rBtn.onclick=()=>reverseSelected();
   const fBtn=propsBody.querySelector('#btnFreeze'); if(fBtn) fBtn.onclick=()=>freezeSelected();
+  {
+    bind('transSel',e=>{c.transition=e.target.value});
+    bind('transDur',e=>{c.transitionDur=+e.target.value/100});
+    const mSeg=propsBody.querySelector('#maskTypeSeg'); if(mSeg) mSeg.querySelectorAll('button').forEach(b=>b.onclick=e=>{ c.mask.type=e.target.dataset.v; renderProps(); });
+  (propsBody.querySelectorAll('[data-preset]')||[]).forEach(b=>b.onclick=e=>applyPreset(e.target.dataset.preset));
+    const cv=document.getElementById('speedCurveCanvas'); if(cv){
+      const ctx2=cv.getContext('2d'); let dragging=false;
+      function drawCurve(){
+        const W=cv.width,H=cv.height; ctx2.clearRect(0,0,W,H);
+        ctx2.strokeStyle='#3b82f6'; ctx2.lineWidth=2; ctx2.beginPath();
+        const curve=(c.speedCurve||[]).slice().sort((a,b)=>a.t-b.t);
+        if(!curve.length){ ctx2.moveTo(0,H); ctx2.lineTo(W,H); ctx2.stroke(); return; }
+        const maxT=Math.max(1, curve[curve.length-1].t);
+        const maxV=Math.max(2,curve[curve.length-1].v);
+        for(let i=0;i<curve.length;i++){
+          const x=(curve[i].t/maxT)*W, y=H-(curve[i].v/maxV)*H;
+          i===0?ctx2.moveTo(x,y):ctx2.lineTo(x,y);
+        }
+        ctx2.stroke();
+      }
+      drawCurve();
+      cv.onmousedown=e=>{ dragging=true; };
+      cv.onmousemove=e=>{
+        if(!dragging) return;
+        const r=cv.getBoundingClientRect();
+        const x=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+        const maxT=Math.max(1,(c.speedCurve||[]).slice().sort((a,b)=>a.t-b.t).slice(-1)[0]?.t||1);
+        const maxV=Math.max(2,(c.speedCurve||[]).slice().sort((a,b)=>a.t-b.t).slice(-1)[0]?.v||1);
+        const y=Math.max(0.1,Math.min(4,(1-(e.clientY-r.top)/r.height)*(maxV)) );
+        c.speedCurve=(c.speedCurve||[]).filter(p=>Math.abs(p.t-x*maxT)>0.05);
+        c.speedCurve.push({t:x*maxT, v:y}); c.speedCurve.sort((a,b)=>a.t-b.t);
+        drawCurve();
+      };
+      window.addEventListener('mouseup',()=>{ if(dragging){dragging=false; renderProps();} });
+    }
+    const kfClear=propsBody.querySelector('#kfSpeedClear'); if(kfClear) kfClear.onclick=()=>{ c.speedCurve=(c.speedCurve||[]); c.speedCurve.length=0; renderProps(); };
+  }
   {
     if(!c.mask) c.mask={type:'rect',w:60,h:60,feather:10,on:false};
     bind('maskOn',e=>{ c.mask.on=e.target.checked; });
