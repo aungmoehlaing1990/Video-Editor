@@ -533,8 +533,23 @@ const TTS_VOICES=[
   {id:'en-wm',label:'English West Midlands',variant:'en-wm',pitch:50,speed:175,gender:'m'},
   {id:'en-n',label:'English Northern',variant:'en-n',pitch:50,speed:175,gender:'m'}
 ];
+function refreshTTSVoices(){ return TTS_VOICES.concat(sysVoices); }
+let sysVoices=[];
+function loadSysVoices(){
+  if(typeof speechSynthesis==='undefined') return [];
+  try{
+    const voices=speechSynthesis.getVoices();
+    if(!voices||!voices.length){
+      speechSynthesis.onvoiceschanged=()=>{ sysVoices=speechSynthesis.getVoices(); };
+      return [];
+    }
+    sysVoices=voices.map(v=>({id:v.name||v.voiceURI, label:(v.name||v.voiceURI)+(v.lang?' ['+v.lang+']':''), engine:'sys', voiceURI:v.voiceURI, lang:v.lang}));
+    return sysVoices;
+  }catch(e){ return []; }
+}
 let ttsReady=false, ttsLoading=false;
 function initTTS(){
+  loadSysVoices();
   if(typeof meSpeak==='undefined'||!meSpeak){ return false; }
   if(!ttsLoading&&!ttsReady){
     ttsLoading=true;
@@ -547,8 +562,40 @@ function speakOptionFor(voiceId,pitch,speed){
   const v=TTS_VOICES.find(x=>x.id===voiceId)||TTS_VOICES[0];
   return {rawdata:'base64', volume:1, pitch:pitch??v.pitch??50, speed:speed??v.speed??175, variant:v.variant||undefined};
 }
-function synthWav(text, voiceId, pitch, speed){
+function synthSys(text, voiceURI, pitch, rate){
+  return new Promise((resolve)=>{
+    if(typeof speechSynthesis==='undefined'){ resolve(null); return; }
+    const u=new SpeechSynthesisUtterance(text);
+    const v=sysVoices.find(x=>x.voiceURI===voiceURI);
+    if(v) u.voice=v;
+    u.pitch=((pitch??50)/50);
+    u.rate=((rate??175)/175);
+    u.volume=1;
+    const ac=new (window.AudioContext||window.webkitAudioContext)();
+    const dest=ac.createMediaStreamDestination();
+    const rec=new MediaRecorder(dest.stream);
+    const ch=[]; rec.ondataavailable=e=>ch.push(e.data);
+    rec.start();
+    speechSynthesis.speak(u);
+    u.onend=()=>{
+      try{ rec.stop(); }catch(e){}
+      setTimeout(()=>{
+        const blob=new Blob(ch,{type:'audio/webm'});
+        const reader=new FileReader();
+        reader.onloadend=()=>resolve(reader.result);
+        reader.onerror=()=>resolve(null);
+        reader.readAsDataURL(blob);
+      },120);
+    };
+    setTimeout(()=>{ try{ speechSynthesis.cancel(); }catch(e){} resolve(null); },15000);
+  });
+}
+async function synthWav(text, voiceId, pitch, speed){
   if(!initTTS()) return null;
+  const sys=sysVoices.find(x=>x.id===voiceId);
+  if(sys && sys.engine==='sys'){
+    try{ return await synthSys(text, sys.voiceURI, pitch, speed); }catch(e){ console.warn('sys TTS failed',e); }
+  }
   try{ return meSpeak.speak(text, speakOptionFor(voiceId,pitch,speed)); }catch(e){ console.warn('meSpeak failed',e); return null; }
 }
 // decode a base64 WAV (RIFF) into a Web Audio AudioBuffer for mixing
