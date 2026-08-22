@@ -707,6 +707,16 @@ function totalDuration(){
   let d=0; for(const t of state.tracks) for(const c of t.clips) d=Math.max(d,c.start+effDur(c));
   return Math.max(d, 1);
 }
+function activeClipsAt(time){
+  const active=[];
+  for(const track of state.tracks){
+    for(const clip of track.clips){
+      const duration=effDur(clip);
+      if(time>=clip.start && time<clip.start+duration) active.push({track,clip});
+    }
+  }
+  return active;
+}
 function renderTimeline(){
   const dur=totalDuration();
   const W=dur*state.pixelsPerSec+200;
