@@ -2,12 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>CapCut Pro — Video Editor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="AMHYR AI Cinema Studio — a private, browser-based timeline video editor." />
+<meta name="theme-color" content="#0b0e12" />
+<link rel="manifest" href="manifest.webmanifest" />
+<title>AMHYR AI Cinema Studio — Video Editor</title>
 <style>
   :root{
-    --bg:#0e0f13; --panel:#16181f; --panel2:#1d2029; --line:#2a2e3a;
-    --txt:#e7e9ee; --muted:#8b90a0; --accent:#ff2d55; --accent2:#3b82f6;
+    --bg:#0b0e12; --panel:#11161d; --panel2:#19212b; --line:#35414d;
+    --txt:#f2f5f7; --muted:#9aa7b3; --accent:#00f0ff; --accent2:#7d8b99;
     --ok:#22c55e; --warn:#f59e0b; --clip:#2b3550; --clipimg:#3a2f4d; --cliptxt:#1f4a3a;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
@@ -18,8 +21,9 @@
     border-radius:8px;padding:7px 11px;cursor:pointer;font-size:12px;transition:.12s;}
   button:hover{background:#262a36;border-color:#3a4150;}
   button:active{transform:scale(.97);}
-  button.primary{background:var(--accent);border-color:var(--accent);}
-  button.primary:hover{background:#ff4d6e;}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#031014;font-weight:700;}
+  button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  button.primary:hover{background:#63f7ff;}
   button.ghost{background:transparent;}
   input,select,textarea{font-family:inherit;color:var(--txt);background:var(--panel2);
     border:1px solid var(--line);border-radius:7px;padding:6px 8px;font-size:12px;width:100%;}
@@ -61,6 +65,7 @@
   #stage .toolbar{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);align-items:center;flex-wrap:wrap;}
   #canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:10px;}
   #preview{background:#000;max-width:100%;max-height:100%;border-radius:6px;box-shadow:0 8px 30px rgba(0,0,0,.5);}
+  #canvasWrap.drag-active{outline:2px dashed var(--accent);outline-offset:-8px;background:rgba(0,240,255,.06);}
   .stage-foot{display:flex;gap:10px;align-items:center;padding:8px 14px;border-top:1px solid var(--line);}
   .time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;}
 
@@ -114,7 +119,7 @@
   /* transport */
   .transport{display:flex;align-items:center;gap:8px;}
   .bigplay{width:40px;height:40px;border-radius:50%;background:var(--accent);border:0;font-size:18px;display:flex;align-items:center;justify-content:center;color:#fff;}
-  .bigplay:hover{background:#ff4d6e;}
+  .bigplay:hover{background:#63f7ff;}
 
   /* Modal / toast */
   #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#222;color:#fff;
@@ -141,16 +146,12 @@
     .tl-ruler{margin-left:54px;}.playhead{left:54px;}
   }
 </style>
-    .tl-ruler{margin-left:54px;}
-    .playhead{left:54px;}
-  }
-</style>
 </head>
 <body>
 <div id="app">
   <!-- TOP BAR -->
   <div id="topbar">
-    <div class="logo">Cap<span>Cut</span> Pro</div>
+    <div class="logo" aria-label="AMHYR AI Cinema Studio">AMHYR <span>AI CINEMA</span></div>
     <button class="ghost" id="btnImportVideo">+ Video</button>
     <button class="ghost" id="btnImportImage">+ Image</button>
     <button class="ghost" id="btnImportAudio">+ Audio</button>
@@ -164,7 +165,6 @@
     <div class="spacer"></div>
     <button class="ghost" id="btnSave">Save</button>
     <button class="ghost" id="btnLoad">Open</button>
-    <button class="ghost" id="btnUndo">Undo</button>
     <button class="primary" id="btnExport">Export</button>
     <input type="file" id="fileInputSRT" accept=".srt,.vtt,.txt" class="hidden">
     <input type="file" id="fileInput" accept="video/*,image/*,audio/*" multiple class="hidden">
@@ -273,8 +273,11 @@
 <script src="vendor/mespeak.js"></script>
 <script>
 "use strict";
+const canvas=document.getElementById("preview");
+const ctx=canvas.getContext("2d",{alpha:false});
+if(!ctx) throw new Error("Canvas 2D rendering is unavailable in this browser.");
 /* ============================================================
-   CapCut Pro — single-file offline video editor
+   AMHYR AI Cinema Studio — single-file offline video editor
    Pure-logic core + DOM/render layer.
    ============================================================ */
 
@@ -508,7 +511,7 @@ function exportSRT(){
     lines.push((i+1)+'\n'+from+' --> '+to+'\n'+String(c.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'\n');
   }
   var blob=new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'});
-  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(state.projectName||'capcut-pro')+'.srt';a.click();
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(state.projectName||'amhyr-ai-cinema')+'.srt';a.click();
   toast('Exported SRT');
 }
 function fmtSRT(t){
@@ -1794,7 +1797,7 @@ async function startExport(){
   // gallery apps accept it. The file remains VP9/Opus inside a WebM container.
   const blob=new Blob(chunks,{type:dlType});
   const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');a.href=url;a.download=(state.projectName||'capcut-pro')+'.'+dlExt;a.click();
+  const a=document.createElement('a');a.href=url;a.download=(state.projectName||'amhyr-ai-cinema')+'.'+dlExt;a.click();
   exportModal.classList.add('hidden');
   toast('Export ready ('+(blob.size/1048576).toFixed(1)+' MB)');
 }
@@ -1863,7 +1866,6 @@ function showShortcuts(){
   const rows=shortcuts.map(s=>'<tr><td><kbd>'+s.key+'</kbd></td><td>'+s.action+'</td></tr>').join('');
   toast('<table style="font-size:12px"><tr><th>Shortcut</th><th>Action</th></tr>'+rows+'</table>',4000);
 }
-document.getElementById('btnHelp').onclick=showShortcuts;
 // also bind ? key
 document.addEventListener('keydown',e=>{
   if(e.key==='?'&&!e.ctrlKey&&!e.metaKey&&document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='TEXTAREA'){e.preventDefault();showShortcuts();}
@@ -1903,6 +1905,21 @@ document.getElementById('btnHelp').onclick=showShortcuts;
 document.addEventListener('keydown',e=>{
   if(e.key==='?'&&!e.ctrlKey&&!e.metaKey&&document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='TEXTAREA'){e.preventDefault();showShortcuts();}
 });
+
+/* ---------- AMHYR QUALITY + ACCESSIBILITY ---------- */
+(function enhanceEditor(){
+  const labels={btnImportVideo:'Import video',btnImportImage:'Import image',btnImportAudio:'Import audio',btnAddText:'Add text',btnSub:'Add subtitle',btnImportSRT:'Import subtitles',btnExportSRT:'Export subtitles',btnAddTTS:'Add voiceover',btnUndo:'Undo',btnRedo:'Redo',btnSave:'Save project',btnLoad:'Open project',btnExport:'Export video',btnZoomOut:'Zoom timeline out',btnZoomIn:'Zoom timeline in',btnFit:'Fit timeline',btnSnap:'Toggle timeline snapping',btnPlay:'Play or pause',btnStart:'Jump to start',btnHelp:'Keyboard shortcuts',btnMute:'Mute preview',btnSplit:'Split selected clip',btnDel:'Delete selected clip',btnCopy:'Duplicate selected clip'};
+  for(const [id,label] of Object.entries(labels)){const el=document.getElementById(id);if(el){el.setAttribute('aria-label',label);if(!el.title)el.title=label;}}
+  document.getElementById('preview').setAttribute('aria-label','Video preview');
+  document.getElementById('seek').setAttribute('aria-label','Timeline playhead');
+  const wrap=document.getElementById('canvasWrap');
+  for(const type of ['dragenter','dragover']) wrap.addEventListener(type,e=>{e.preventDefault();wrap.classList.add('drag-active');});
+  for(const type of ['dragleave','drop']) wrap.addEventListener(type,e=>{e.preventDefault();wrap.classList.remove('drag-active');});
+  wrap.addEventListener('drop',e=>{for(const file of [...e.dataTransfer.files]){if(/^(video|audio|image)//.test(file.type)) importFile(file);}});
+  window.addEventListener('error',e=>{console.error('[AMHYR Editor]',e.error||e.message);});
+  if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+})();
+
 </script>
 </body>
 </html>
