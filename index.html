@@ -364,6 +364,30 @@ function ensureTracks(){
 }
 ensureTracks();
 
+/* ---------- DURABLE MEDIA STORAGE (IndexedDB) ---------- */
+const MEDIA_DB='amhyr-ai-cinema', MEDIA_STORE='media-blobs';
+function openMediaDB(){
+  return new Promise((resolve,reject)=>{
+    if(!('indexedDB' in window)){resolve(null);return;}
+    const req=indexedDB.open(MEDIA_DB,1);
+    req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains(MEDIA_STORE))req.result.createObjectStore(MEDIA_STORE);};
+    req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error);
+  });
+}
+async function persistMediaBlob(id,blob){
+  try{const db=await openMediaDB();if(!db)return;await new Promise((resolve,reject)=>{const tx=db.transaction(MEDIA_STORE,'readwrite');tx.objectStore(MEDIA_STORE).put(blob,id);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});db.close();}catch(e){console.warn('Media persistence unavailable',e);}
+}
+async function readMediaBlob(id){
+  try{const db=await openMediaDB();if(!db)return null;const blob=await new Promise((resolve,reject)=>{const req=db.transaction(MEDIA_STORE).objectStore(MEDIA_STORE).get(id);req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error);});db.close();return blob;}catch(e){return null;}
+}
+async function hydrateMedia(items){
+  for(const m of items||[]){const blob=await readMediaBlob(m.id);if(blob){if(m.url&&String(m.url).startsWith('blob:'))try{URL.revokeObjectURL(m.url);}catch(e){}m.url=URL.createObjectURL(blob);m.missing=false;}else if(!m.url||String(m.url).startsWith('blob:')){m.url='';m.missing=true;}}
+  return items||[];
+}
+function projectSnapshot(){
+  return {version:2,name:state.projectName,projectName:state.projectName,tracks:state.tracks,media:state.media.map(m=>({id:m.id,name:m.name,kind:m.kind,type:m.type,dur:m.dur,w:m.w,h:m.h,thumb:m.thumb})),pixelsPerSec:state.pixelsPerSec,snap:state.snap};
+}
+
 /* ---------- MEDIA IMPORT ---------- */
 const fileInput=document.getElementById('fileInput');
 document.getElementById('btnImportVideo').onclick=()=>{fileInput.accept='video/*';fileInput.click();};
@@ -396,6 +420,7 @@ async function importFile(f){
       a.onloadedmetadata=()=>{m.dur=a.duration;res();};a.onerror=res;a.load();});
   }
   state.media.push(m);
+  await persistMediaBlob(m.id,f);
   renderBin();
   toast('Imported '+m.name);
 }
@@ -1546,7 +1571,7 @@ function renderBin(){
     const it=document.createElement('div');it.className='bin-item';it.onclick=()=>addMediaClip(m.id);
     const icon=m.kind==='video'?'🎬':m.kind==='audio'?'🎵':'🖼️';
     it.innerHTML='<div class="bin-thumb">'+(m.thumb?'<img src="'+m.thumb+'">':icon)+'</div>'+
-      '<div class="bin-meta"><div class="bin-name">'+escapeHtml(m.name)+'</div><div class="bin-sub">'+m.kind+' · '+fmt(m.dur)+'</div></div>';
+      '<div class="bin-meta"><div class="bin-name">'+escapeHtml(m.name)+'</div><div class="bin-sub">'+m.kind+' · '+fmt(m.dur)+(m.missing?' · re-import required':'')+'</div></div>';
     binList.appendChild(it);
   }
   if(state.media.length===0){
@@ -1559,10 +1584,11 @@ function saveProject(){
   serializeAndSave();
   toast('Saved to browser');
 }
-function loadProject(data){
+async function loadProject(data){
+  if(typeof data==="string"){try{data=JSON.parse(data);}catch(e){throw new Error("Invalid project data");}}
   ensureTracks();
   state.tracks=data.tracks||state.tracks;
-  state.media=data.media||state.media;
+  state.media=await hydrateMedia(data.media||state.media);
   state.pixelsPerSec=data.pixelsPerSec||120;
   state.snap=data.snap!==undefined?data.snap:true;
   state.projectName=data.name||'Untitled';
@@ -1571,9 +1597,9 @@ function loadProject(data){
   toast('Project loaded');
 }
 document.getElementById('btnSave').onclick=saveProject;
-document.getElementById('btnLoad').onclick=()=>{
+document.getElementById('btnLoad').onclick=async()=>{
   const raw=localStorage.getItem('capcutpro_project');
-  if(raw){try{loadProject(JSON.parse(raw));}catch(e){toast('Load failed');}}
+  if(raw){try{await loadProject(JSON.parse(raw));}catch(e){console.error(e);toast('Load failed');}}
   else toast('No saved project');
 };
 // autosave every 30s + onbeforeunload
@@ -1581,15 +1607,13 @@ let autosaveTimer=null;
 function startAutosave(){
   if(autosaveTimer) clearInterval(autosaveTimer);
   autosaveTimer=setInterval(()=>{
-    try{localStorage.setItem('capcutpro_project_autosave',JSON.stringify(serializeProjectState()));}catch(e){}
+    try{localStorage.setItem('capcutpro_project_autosave',JSON.stringify(projectSnapshot()));}catch(e){}
   },30000);
 }
 function stopAutosave(){if(autosaveTimer){clearInterval(autosaveTimer);autosaveTimer=null;}}
 function serializeAndSave(){
-  try{localStorage.setItem('capcutpro_project',JSON.stringify({
-    version:1,name:state.projectName,tracks:state.tracks,media:state.media.map(m=>({id:m.id,name:m.name,url:m.url,kind:m.kind,type:m.type,dur:m.dur,w:m.w,h:m.h,thumb:m.thumb})),
-    pixelsPerSec:state.pixelsPerSec,snap:state.snap
-  }));}catch(e){}
+  try{localStorage.setItem('capcutpro_project',JSON.stringify(projectSnapshot()));}
+  catch(e){console.error(e);toast('Project save failed');}
 }
 function serializeProjectState(){
   return JSON.stringify({
@@ -1598,17 +1622,18 @@ function serializeProjectState(){
     pixelsPerSec:state.pixelsPerSec,snap:state.snap,projectName:state.projectName
   });
 }
-window.addEventListener('beforeunload',()=>{try{localStorage.setItem('capcutpro_project_autosave',JSON.stringify(serializeProjectState()));}catch(e){}});
+window.addEventListener('beforeunload',()=>{try{localStorage.setItem('capcutpro_project_autosave',JSON.stringify(projectSnapshot()));}catch(e){}});
 startAutosave();
 // quick autosave restore on load (silent, no toast)
 (function(){
   const raw=localStorage.getItem('capcutpro_project_autosave');
   if(!raw) return;
   try{
-    const data=JSON.parse(raw);
+    let data=JSON.parse(raw);
+    if(typeof data==='string') data=JSON.parse(data);
     const hasClips=data.tracks&&data.tracks.some(t=>t.clips&&t.clips.length);
     if(hasClips&&!state.tracks.some(t=>t.clips.length)){
-      loadProject(data);toast('Auto-save restored');
+      loadProject(data).then(()=>toast('Auto-save restored'));
     }
   }catch(e){}
 })();
