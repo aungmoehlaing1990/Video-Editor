@@ -1915,7 +1915,7 @@ document.addEventListener('keydown',e=>{
   const wrap=document.getElementById('canvasWrap');
   for(const type of ['dragenter','dragover']) wrap.addEventListener(type,e=>{e.preventDefault();wrap.classList.add('drag-active');});
   for(const type of ['dragleave','drop']) wrap.addEventListener(type,e=>{e.preventDefault();wrap.classList.remove('drag-active');});
-  wrap.addEventListener('drop',e=>{for(const file of [...e.dataTransfer.files]){if(/^(video|audio|image)//.test(file.type)) importFile(file);}});
+  wrap.addEventListener('drop',e=>{for(const file of [...e.dataTransfer.files]){if(new RegExp('^(video|audio|image)/').test(file.type)) importFile(file);}});
   window.addEventListener('error',e=>{console.error('[AMHYR Editor]',e.error||e.message);});
   if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 })();
